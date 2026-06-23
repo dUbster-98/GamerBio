@@ -1,0 +1,7 @@
+tunnel: 4e48e038-e43c-49fc-832b-6c057b9ff829
+credentials-file: /home/tjdgus/.cloudflared/4e48e038-e43c-49fc-832b-6c057b9ff829.json
+
+ingress:
+  - hostname: bio-monitor.uk
+    service: http://localhost:5000
+  - service: http_status:404

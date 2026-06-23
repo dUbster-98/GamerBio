@@ -9,6 +9,14 @@
 *.user
 *.userosscache
 *.sln.docstates
+/publish-arm64
+
+# Environment-specific app settings (contain DB passwords, secrets)
+appsettings.Production.json
+appsettings.*.local.json
+
+# Publish output (built per-deployment, can be regenerated)
+**/publish/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

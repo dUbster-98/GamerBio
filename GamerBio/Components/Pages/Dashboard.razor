@@ -1,0 +1,209 @@
+@page "/dashboard"
+@rendermode InteractiveServer
+@using GamerBio.Hubs
+@using GamerBio.Models
+@using Microsoft.AspNetCore.SignalR.Client
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<PageTitle>Bio Dashboard</PageTitle>
+
+<h1>🎮 Bio Dashboard</h1>
+
+<p>
+    상태:
+    @if (_connection?.State == HubConnectionState.Connected)
+    {
+        <span class="badge bg-success">연결됨</span>
+    }
+    else
+    {
+        <span class="badge bg-secondary">@(_connection?.State.ToString() ?? "Disconnected")</span>
+    }
+</p>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+            <h5 class="card-title mb-0">현재 긴장도</h5>
+            @if (_tension is null)
+            {
+                <span class="badge bg-secondary">대기 중</span>
+            }
+            else
+            {
+                <span class="badge fs-6 @StateBadgeClass(_tension.State)">
+                    @StateEmoji(_tension.State) @StateLabel(_tension.State)
+                </span>
+            }
+        </div>
+
+        @if (_tension is null)
+        {
+            <p class="text-muted mb-0"><em>데이터가 수신되면 긴장도가 표시됩니다.</em></p>
+        }
+        else
+        {
+            <div class="d-flex align-items-center mb-2">
+                <div class="flex-grow-1 me-3">
+                    <div class="progress" style="height: 1.5rem;">
+                        <div class="progress-bar @StateProgressClass(_tension.State)"
+                             role="progressbar"
+                             style="width: @(_tension.Score)%;"
+                             aria-valuenow="@_tension.Score" aria-valuemin="0" aria-valuemax="100">
+                            @_tension.Score / 100
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row text-center small text-muted">
+                <div class="col">BPM 기여도 <strong>@_tension.BpmScore</strong></div>
+                <div class="col">GSR 기여도 <strong>@_tension.GsrScore</strong></div>
+                <div class="col">변동성 저하 <strong>@_tension.LowVariabilityScore</strong></div>
+            </div>
+        }
+    </div>
+</div>
+
+@if (_latest is null)
+{
+    <p><em>아직 수신된 데이터가 없습니다. <code>POST /api/biosignal</code>로 더미 데이터를 보내보세요.</em></p>
+}
+else
+{
+    <div class="row g-3 mb-3">
+        <div class="col-md-3">
+            <div class="card text-bg-light">
+                <div class="card-body">
+                    <h6 class="card-subtitle text-muted">BPM</h6>
+                    <p class="card-text fs-2 mb-0">@_latest.Bpm</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-bg-light">
+                <div class="card-body">
+                    <h6 class="card-subtitle text-muted">GSR</h6>
+                    <p class="card-text fs-2 mb-0">@_latest.Gsr</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-bg-light">
+                <div class="card-body">
+                    <h6 class="card-subtitle text-muted">Skin Temp (°C)</h6>
+                    <p class="card-text fs-2 mb-0">@(_latest.SkinTemp?.ToString("F1") ?? "-")</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-bg-light">
+                <div class="card-body">
+                    <h6 class="card-subtitle text-muted">Timestamp</h6>
+                    <p class="card-text mb-0">@_latest.Timestamp.LocalDateTime.ToString("HH:mm:ss")</p>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<h3>최근 수신 (최대 20개)</h3>
+<table class="table table-sm table-striped">
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>BPM</th>
+            <th>GSR</th>
+            <th>Temp</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in _recent)
+        {
+            <tr>
+                <td>@item.Timestamp.LocalDateTime.ToString("HH:mm:ss")</td>
+                <td>@item.Bpm</td>
+                <td>@item.Gsr</td>
+                <td>@(item.SkinTemp?.ToString("F1") ?? "-")</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private const int MaxRecent = 20;
+
+    private HubConnection? _connection;
+    private BioSignal? _latest;
+    private TensionReading? _tension;
+    private readonly LinkedList<BioSignal> _recent = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _connection = new HubConnectionBuilder()
+            .WithUrl(Nav.ToAbsoluteUri(BioSignalHub.Path))
+            .WithAutomaticReconnect()
+            .Build();
+
+        _connection.On<BioSignal>(BioSignalHub.BioSignalReceived, async signal =>
+        {
+            _latest = signal;
+            _recent.AddFirst(signal);
+            while (_recent.Count > MaxRecent)
+            {
+                _recent.RemoveLast();
+            }
+            await InvokeAsync(StateHasChanged);
+        });
+
+        _connection.On<TensionReading>(BioSignalHub.TensionUpdated, async reading =>
+        {
+            _tension = reading;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        await _connection.StartAsync();
+    }
+
+    private static string StateLabel(TensionState state) => state switch
+    {
+        TensionState.Calibrating => "보정 중",
+        TensionState.Relaxed => "Relaxed",
+        TensionState.Focused => "Focused",
+        TensionState.Stressed => "Stressed",
+        _ => state.ToString(),
+    };
+
+    private static string StateEmoji(TensionState state) => state switch
+    {
+        TensionState.Calibrating => "⏳",
+        TensionState.Relaxed => "😌",
+        TensionState.Focused => "😤",
+        TensionState.Stressed => "🔥",
+        _ => string.Empty,
+    };
+
+    private static string StateBadgeClass(TensionState state) => state switch
+    {
+        TensionState.Relaxed => "bg-success",
+        TensionState.Focused => "bg-warning text-dark",
+        TensionState.Stressed => "bg-danger",
+        _ => "bg-secondary",
+    };
+
+    private static string StateProgressClass(TensionState state) => state switch
+    {
+        TensionState.Relaxed => "bg-success",
+        TensionState.Focused => "bg-warning",
+        TensionState.Stressed => "bg-danger",
+        _ => "bg-secondary",
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
+    }
+}

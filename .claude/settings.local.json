@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet --list-sdks)",
+      "Bash(dotnet --list-runtimes)",
+      "Bash(dotnet build *)",
+      "PowerShell(dotnet build *)",
+      "Bash(ASPNETCORE_URLS=http://localhost:5080 dotnet run *)",
+      "Read(//c/Users/shkim3/AppData/Local/Temp/claude/C--Users-shkim3-Documents-GitHub-GamerBio/2a872ed7-1f06-43c0-9291-53dcb3794018/tasks/**)",
+      "Bash(curl *)",
+      "Bash(dotnet publish *)",
+      "Bash(dotnet add *)",
+      "Bash(dotnet ef *)",
+      "Bash(dotnet tool *)"
+    ]
+  }
+}
