@@ -14,5 +14,7 @@ public record TensionReading(
     int BpmScore,
     int GsrScore,
     int LowVariabilityScore,
+    int EmotionScore,
+    string? DominantEmotion,
     DateTimeOffset GeneratedAt
 );

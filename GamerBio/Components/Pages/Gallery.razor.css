@@ -1,0 +1,170 @@
+.gallery {
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+    max-width: 1180px;
+    animation: gal-in 0.5s ease both;
+}
+@keyframes gal-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ---- header -------------------------------------------------- */
+.gal-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.gal-title {
+    margin: 0.3rem 0 0;
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    font-weight: 800;
+}
+.gal-count {
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+/* ---- uploader ------------------------------------------------ */
+.uploader { padding: 1.3rem 1.4rem; }
+.up-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.1rem;
+    align-items: stretch;
+}
+
+.up-drop {
+    position: relative;
+    flex: 2;
+    min-width: 260px;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 1.1rem 1.2rem;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    background: rgba(33, 212, 253, 0.04);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, transform 0.15s;
+}
+.up-drop:hover { border-color: var(--gsr); background: rgba(33, 212, 253, 0.08); transform: translateY(-1px); }
+/* the real <input type=file> covers the label so clicks/drops land on it */
+.up-drop ::deep input[type="file"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+.up-ico { font-size: 1.6rem; color: var(--gsr); }
+.up-text { display: flex; flex-direction: column; gap: 0.2rem; }
+.up-text strong { font-weight: 700; color: var(--bright); }
+.up-text small { font-size: 0.72rem; color: var(--faint); letter-spacing: 0.05em; }
+
+.up-caption {
+    flex: 1.4;
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    justify-content: center;
+}
+.up-input {
+    padding: 0.65rem 0.8rem;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.up-input:focus { border-color: var(--gsr); box-shadow: 0 0 0 0.18rem rgba(33,212,253,0.22); }
+
+.up-msg {
+    margin-top: 1rem;
+    font-size: 0.82rem;
+    padding: 0.55rem 0.8rem;
+    border-radius: 8px;
+    border: 1px solid currentColor;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.up-msg.ok  { color: var(--accent); }
+.up-msg.err { color: var(--heart); }
+
+/* ---- empty --------------------------------------------------- */
+.gal-empty {
+    padding: 2.6rem 1.4rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.86rem;
+}
+
+/* ---- grid ---------------------------------------------------- */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+}
+.card {
+    margin: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.18s, border-color 0.2s;
+}
+.card:hover { transform: translateY(-3px); border-color: var(--muted); }
+
+.card-link { display: block; aspect-ratio: 4 / 3; background: #0c1118; }
+.card-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.card-meta { padding: 0.7rem 0.85rem 0.85rem; }
+.card-caption {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--bright);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.card-sub {
+    margin-top: 0.35rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.7rem;
+    color: var(--faint);
+}
+
+.card-del {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.55rem;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: rgba(10, 13, 18, 0.72);
+    color: var(--muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    opacity: 0;
+    backdrop-filter: blur(4px);
+    transition: opacity 0.18s, color 0.2s, border-color 0.2s;
+}
+.card:hover .card-del { opacity: 1; }
+.card-del:hover { color: var(--heart); border-color: var(--heart); }
+.card-del:disabled { cursor: default; opacity: 0.3; }

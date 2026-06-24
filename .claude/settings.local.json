@@ -11,7 +11,18 @@
       "Bash(dotnet publish *)",
       "Bash(dotnet add *)",
       "Bash(dotnet ef *)",
-      "Bash(dotnet tool *)"
+      "Bash(dotnet tool *)",
+      "Bash(python -m py_compile emotion_webcam.py)",
+      "Bash(ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://localhost:5099 dotnet run --no-build)",
+      "Bash(echo \"started pid $!\")",
+      "PowerShell(dotnet ef migrations *)",
+      "Bash(echo \"exit=$?\")",
+      "PowerShell(Get-Process *)",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\shkim3\\\\Documents\\\\GitHub\\\\GamerBio\\\\deepface\\\\emotion_webcam.py\" 2>&1; if \\($LASTEXITCODE -eq 0\\) { \"SYNTAX OK\" } else { \"SYNTAX FAIL\" })",
+      "PowerShell(python --version)",
+      "PowerShell(python -c \"import argparse; print\\('BooleanOptionalAction OK' if hasattr\\(argparse,'BooleanOptionalAction'\\) else 'NOT SUPPORTED'\\)\")",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\shkim3\\\\Documents\\\\GitHub\\\\GamerBio\\\\deepface\\\\emotion_webcam.py\" 2>&1)",
+      "PowerShell(if \\($LASTEXITCODE -eq 0\\) { \"SYNTAX OK\" } else { \"SYNTAX FAIL\" })"
     ]
   }
 }

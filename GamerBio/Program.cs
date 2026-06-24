@@ -4,6 +4,7 @@ using GamerBio.Hubs;
 using GamerBio.Models;
 using GamerBio.Services;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,11 +15,15 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<TensionAnalyzer>();
+builder.Services.AddSingleton<GalleryStorage>();
+
+// HttpClient used by the /cam reverse proxy. MJPEG is a long-lived stream, so
+// the default 100s timeout must be disabled or it would kill the feed.
+builder.Services.AddHttpClient("camera", c => c.Timeout = Timeout.InfiniteTimeSpan);
 
 builder.Services.Configure<ForwardedHeadersOptions>(opts =>
 {
     opts.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    opts.KnownNetworks.Clear();
     opts.KnownProxies.Clear();
 });
 
@@ -27,6 +32,10 @@ var useInMemoryDb = string.IsNullOrWhiteSpace(bioMonitorConnection);
 
 var bioMonitorApiKey = builder.Configuration["BioMonitor:ApiKey"];
 var requireApiKey = !string.IsNullOrWhiteSpace(bioMonitorApiKey);
+
+// Internal address of the PC's Python MJPEG server (e.g. http://192.168.0.50:8080/).
+// Server-side only: the browser never sees it — it just requests /cam on this host.
+var cameraUpstream = builder.Configuration["Camera:UpstreamUrl"];
 
 builder.Services.AddDbContext<BioMonitorContext>(opts =>
 {
@@ -78,6 +87,68 @@ app.MapRazorComponents<App>()
 
 app.MapHub<BioSignalHub>(BioSignalHub.Path);
 
+// Reverse-proxy the PC's LAN-only MJPEG stream under our own (HTTPS) origin so
+// the public dashboard can show it without mixed-content or reachability issues:
+//   browser → https://bio-monitor.uk/cam → (Cloudflare Tunnel) → here → PC:8080
+app.MapGet("/cam", async (HttpContext ctx, IHttpClientFactory httpFactory, ILogger<Program> logger) =>
+{
+    if (string.IsNullOrWhiteSpace(cameraUpstream))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    var client = httpFactory.CreateClient("camera");
+    try
+    {
+        using var upstream = await client.GetAsync(
+            cameraUpstream, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+
+        ctx.Response.StatusCode = (int)upstream.StatusCode;
+        ctx.Response.ContentType = upstream.Content.Headers.ContentType?.ToString()
+            ?? "multipart/x-mixed-replace";
+        ctx.Response.Headers.CacheControl = "no-cache, no-store, private";
+
+        // Stream the multipart feed straight through — never buffer an infinite body.
+        ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+        await using var stream = await upstream.Content.ReadAsStreamAsync(ctx.RequestAborted);
+        await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+    }
+    catch (OperationCanceledException)
+    {
+        // Browser navigated away or the host is shutting down — nothing to do.
+    }
+    catch (HttpRequestException ex)
+    {
+        logger.LogWarning(ex, "Camera upstream unreachable: {Upstream}", cameraUpstream);
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status502BadGateway;
+        }
+    }
+});
+
+// Serve a gallery image by id. Files live on disk (outside wwwroot) and are
+// streamed here so the storage path stays server-side and access stays guarded.
+app.MapGet("/gallery/media/{id:long}", async (
+    long id, BioMonitorContext db, GalleryStorage storage) =>
+{
+    var photo = await db.GalleryPhotos.FindAsync(id);
+    if (photo is null)
+    {
+        return Results.NotFound();
+    }
+
+    var path = storage.PathFor(photo);
+    if (!File.Exists(path))
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(path, photo.ContentType, enableRangeProcessing: true);
+});
+
 var api = app.MapGroup("/api");
 if (requireApiKey)
 {
@@ -110,7 +181,7 @@ api.MapPost("/biosignal", async (
     db.BioSignals.Add(entity);
     await db.SaveChangesAsync();
 
-    var tension = analyzer.Update(entity);
+    var tension = analyzer.UpdateBio(entity);
 
     logger.LogInformation("Biosignal saved: id={Id} BPM={Bpm} GSR={Gsr} Temp={Temp} → tension={State}({Score})",
         entity.Id, entity.Bpm, entity.Gsr, entity.SkinTemp, tension.State, tension.Score);
@@ -130,6 +201,71 @@ api.MapGet("/biosignal/recent", async (BioMonitorContext db, int take = 20) =>
     return Results.Ok(items);
 });
 
+// Receive an already-captured frame from the PC (the exact frame DeepFace
+// scored above threshold) and file it in the gallery. Capturing at the source
+// avoids the lag/mismatch of the server re-grabbing a live frame after the fact.
+api.MapPost("/gallery/capture", async (
+    HttpRequest req,
+    BioMonitorContext db,
+    GalleryStorage storage,
+    IHubContext<BioSignalHub> hub,
+    string? emotion,
+    double? score) =>
+{
+    using var ms = new MemoryStream();
+    await req.Body.CopyToAsync(ms, req.HttpContext.RequestAborted);
+    var bytes = ms.ToArray();
+
+    if (bytes.Length == 0)
+    {
+        return Results.BadRequest("empty image body");
+    }
+    if (bytes.Length > GalleryStorage.MaxFileBytes)
+    {
+        return Results.BadRequest("image too large");
+    }
+
+    var storedName = await storage.SaveBytesAsync(bytes, ".jpg", CancellationToken.None);
+    var now = DateTimeOffset.UtcNow;
+    var emo = string.IsNullOrWhiteSpace(emotion) ? "surprise" : emotion.ToLowerInvariant();
+    var photo = new GalleryPhoto
+    {
+        StoredName = storedName,
+        OriginalName = $"auto-{now.LocalDateTime:yyyyMMdd-HHmmss}.jpg",
+        ContentType = "image/jpeg",
+        SizeBytes = bytes.Length,
+        Caption = score is double s
+            ? $"😲 {emo} auto-capture · {s:0}%"
+            : $"😲 {emo} auto-capture",
+        UploadedAt = now,
+    };
+    db.GalleryPhotos.Add(photo);
+    await db.SaveChangesAsync();
+
+    await hub.Clients.All.SendAsync(BioSignalHub.GalleryPhotoAdded, photo);
+    return Results.Ok(new { id = photo.Id });
+});
+
+api.MapPost("/emotion", async (
+    EmotionDto dto,
+    IHubContext<BioSignalHub> hub,
+    TensionAnalyzer analyzer) =>
+{
+    var reading = new EmotionReading(
+        string.IsNullOrWhiteSpace(dto.Dominant) ? "neutral" : dto.Dominant,
+        dto.Scores ?? new Dictionary<string, double>(),
+        DateTimeOffset.UtcNow);
+
+    // Fuse the emotion with the most recent biosignal and re-broadcast tension.
+    var tension = analyzer.UpdateEmotion(reading);
+
+    await hub.Clients.All.SendAsync(BioSignalHub.EmotionUpdated, reading);
+    await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
+
+    return Results.Ok(new { tension });
+});
+
 app.Run();
 
 record BioSignalDto(int Bpm, int Gsr, double? SkinTemp, DateTimeOffset Timestamp);
+record EmotionDto(string? Dominant, Dictionary<string, double>? Scores, DateTimeOffset? Timestamp);

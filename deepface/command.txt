@@ -1,0 +1,5 @@
+local
+python deepface/emotion_webcam.py --stream --port 8080 --post-url https://localhost:7211/api/emotion --insecure
+
+production
+python emotion_webcam.py --stream --port 8080 --post-url http://192.168.0.104:5000/api/emotion --api-key 989a860f8d8b9b8aaa819007a470e911a52caae243365a8d0074ac25a5c69c21 --post-interval 1.0

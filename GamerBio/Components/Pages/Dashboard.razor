@@ -1,134 +1,194 @@
 @page "/dashboard"
 @rendermode InteractiveServer
+@using System.Globalization
 @using GamerBio.Hubs
 @using GamerBio.Models
 @using Microsoft.AspNetCore.SignalR.Client
 @inject NavigationManager Nav
+@inject IConfiguration Config
 @implements IAsyncDisposable
 
-<PageTitle>Bio Dashboard</PageTitle>
+<PageTitle>Live Dashboard · GamerBio</PageTitle>
 
-<h1>🎮 Bio Dashboard</h1>
+<div class="dash" style="--state: @StateColorVar(_tension?.State ?? TensionState.Calibrating);">
 
-<p>
-    상태:
-    @if (_connection?.State == HubConnectionState.Connected)
-    {
-        <span class="badge bg-success">연결됨</span>
-    }
-    else
-    {
-        <span class="badge bg-secondary">@(_connection?.State.ToString() ?? "Disconnected")</span>
-    }
-</p>
-
-<div class="card mb-4">
-    <div class="card-body">
-        <div class="d-flex align-items-center justify-content-between mb-2">
-            <h5 class="card-title mb-0">현재 긴장도</h5>
-            @if (_tension is null)
-            {
-                <span class="badge bg-secondary">대기 중</span>
-            }
-            else
-            {
-                <span class="badge fs-6 @StateBadgeClass(_tension.State)">
-                    @StateEmoji(_tension.State) @StateLabel(_tension.State)
-                </span>
-            }
+    <header class="dash-head">
+        <div>
+            <div class="hud-eyebrow">Live Telemetry</div>
+            <h1 class="dash-title">Bio Dashboard</h1>
         </div>
 
-        @if (_tension is null)
+        <div class="conn-pill @(IsConnected ? "is-on" : "is-off")">
+            <span class="conn-dot"></span>
+            <span class="mono">@(IsConnected ? "STREAM LIVE" : (_connection?.State.ToString().ToUpperInvariant() ?? "OFFLINE"))</span>
+        </div>
+    </header>
+
+    <!-- ===== Camera + Tension ===== -->
+    <section class="stage">
+
+        <div class="hud-panel cam">
+            <div class="cam-head">
+                <span class="hud-eyebrow">Live Camera</span>
+                <span class="cam-status mono @(_camUrl is null ? "off" : "on")">
+                    <span class="cam-dot"></span>@(_camUrl is null ? "NO SOURCE" : "MJPEG")
+                </span>
+            </div>
+
+            <div class="cam-stage">
+                @if (_camUrl is not null)
+                {
+                    <img class="cam-feed" src="@_camUrl" alt="Live camera feed"
+                         onerror="this.classList.add('errored')" />
+                }
+                <div class="cam-offline">
+                    <div class="cam-offline-ico">📷</div>
+                    <div class="cam-offline-txt mono">CAMERA OFFLINE</div>
+                    <div class="cam-offline-sub mono">PC MJPEG 스트림 대기 중</div>
+                </div>
+                <div class="cam-scan" aria-hidden="true"></div>
+                <div class="cam-corner tl"></div>
+                <div class="cam-corner br"></div>
+            </div>
+
+            <div class="cam-foot">
+                <span class="hud-eyebrow">Emotion</span>
+                <span class="cam-emotion mono">
+                    @if (_emotion is not null)
+                    {
+                        @($"{EmotionEmoji(_emotion.Dominant)} {_emotion.Dominant.ToUpperInvariant()} {EmotionPct(_emotion):0}%")
+                    }
+                    else
+                    {
+                        @("— 분석 대기")
+                    }
+                </span>
+            </div>
+        </div>
+
+        <section class="hud-panel hero">
+        <div class="hero-grid">
+            <div class="hero-state">
+                <div class="hud-eyebrow">Tension State</div>
+                <div class="state-name">
+                    <span class="state-emoji">@StateEmoji(_tension?.State ?? TensionState.Calibrating)</span>
+                    @StateLabel(_tension?.State ?? TensionState.Calibrating)
+                </div>
+
+                <div class="ecg" aria-hidden="true">
+                    <div class="ecg-line @(IsConnected ? "live" : "")"
+                         style="--beat: @BeatDuration"></div>
+                </div>
+            </div>
+
+            <div class="hero-score">
+                <div class="score-num mono">@(_tension?.Score ?? 0)<span class="score-max">/100</span></div>
+                <div class="hud-eyebrow">Composite Index</div>
+            </div>
+        </div>
+
+        <div class="gauge">
+            <div class="gauge-fill" style="width: @((_tension?.Score ?? 0))%;"></div>
+            <span class="gauge-tick" style="left:30%"></span>
+            <span class="gauge-tick" style="left:65%"></span>
+        </div>
+
+        <div class="contrib">
+            <div class="contrib-item">
+                <span class="contrib-label mono">BPM</span>
+                <span class="contrib-val mono">@(_tension?.BpmScore ?? 0)</span>
+            </div>
+            <div class="contrib-item">
+                <span class="contrib-label mono">GSR</span>
+                <span class="contrib-val mono">@(_tension?.GsrScore ?? 0)</span>
+            </div>
+            <div class="contrib-item">
+                <span class="contrib-label mono">LOW-VAR</span>
+                <span class="contrib-val mono">@(_tension?.LowVariabilityScore ?? 0)</span>
+            </div>
+            <div class="contrib-item">
+                <span class="contrib-label mono">EMOTION</span>
+                <span class="contrib-val mono">@(_tension?.EmotionScore ?? 0)</span>
+            </div>
+        </div>
+        </section>
+    </section>
+
+    <!-- ===== Vitals ===== -->
+    <section class="vitals">
+        <div class="hud-panel vital v-heart">
+            <div class="vital-top">
+                <span class="hud-eyebrow">Heart Rate</span>
+                <span class="vital-heart" style="--beat: @BeatDuration">♥</span>
+            </div>
+            <div class="vital-num mono">@(_latest?.Bpm.ToString() ?? "––")</div>
+            <div class="vital-unit mono">BPM</div>
+        </div>
+
+        <div class="hud-panel vital v-gsr">
+            <div class="vital-top">
+                <span class="hud-eyebrow">Skin Conductance</span>
+            </div>
+            <div class="vital-num mono">@(_latest?.Gsr.ToString() ?? "––")</div>
+            <div class="vital-unit mono">µS · GSR</div>
+        </div>
+
+        <div class="hud-panel vital v-temp">
+            <div class="vital-top">
+                <span class="hud-eyebrow">Skin Temp</span>
+            </div>
+            <div class="vital-num mono">@(_latest?.SkinTemp?.ToString("F1") ?? "––")</div>
+            <div class="vital-unit mono">°C</div>
+        </div>
+
+        <div class="hud-panel vital v-time">
+            <div class="vital-top">
+                <span class="hud-eyebrow">Last Packet</span>
+            </div>
+            <div class="vital-num vital-time mono">@(_latest?.Timestamp.LocalDateTime.ToString("HH:mm:ss") ?? "--:--:--")</div>
+            <div class="vital-unit mono">@(_recent.Count) samples buffered</div>
+        </div>
+    </section>
+
+    <!-- ===== Feed ===== -->
+    <section class="hud-panel feed">
+        <div class="feed-head">
+            <span class="hud-eyebrow">Incoming Stream</span>
+            <span class="feed-meta mono">last @MaxRecent</span>
+        </div>
+
+        @if (_recent.Count == 0)
         {
-            <p class="text-muted mb-0"><em>데이터가 수신되면 긴장도가 표시됩니다.</em></p>
+            <div class="feed-empty mono">
+                awaiting packets · <code>POST /api/biosignal</code>
+            </div>
         }
         else
         {
-            <div class="d-flex align-items-center mb-2">
-                <div class="flex-grow-1 me-3">
-                    <div class="progress" style="height: 1.5rem;">
-                        <div class="progress-bar @StateProgressClass(_tension.State)"
-                             role="progressbar"
-                             style="width: @(_tension.Score)%;"
-                             aria-valuenow="@_tension.Score" aria-valuemin="0" aria-valuemax="100">
-                            @_tension.Score / 100
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="row text-center small text-muted">
-                <div class="col">BPM 기여도 <strong>@_tension.BpmScore</strong></div>
-                <div class="col">GSR 기여도 <strong>@_tension.GsrScore</strong></div>
-                <div class="col">변동성 저하 <strong>@_tension.LowVariabilityScore</strong></div>
-            </div>
+            <table class="feed-table mono">
+                <thead>
+                    <tr>
+                        <th>TIME</th>
+                        <th>BPM</th>
+                        <th>GSR</th>
+                        <th>TEMP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in _recent)
+                    {
+                        <tr>
+                            <td class="t-time">@item.Timestamp.LocalDateTime.ToString("HH:mm:ss")</td>
+                            <td class="t-heart">@item.Bpm</td>
+                            <td class="t-gsr">@item.Gsr</td>
+                            <td class="t-temp">@(item.SkinTemp?.ToString("F1") ?? "–")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
         }
-    </div>
+    </section>
 </div>
-
-@if (_latest is null)
-{
-    <p><em>아직 수신된 데이터가 없습니다. <code>POST /api/biosignal</code>로 더미 데이터를 보내보세요.</em></p>
-}
-else
-{
-    <div class="row g-3 mb-3">
-        <div class="col-md-3">
-            <div class="card text-bg-light">
-                <div class="card-body">
-                    <h6 class="card-subtitle text-muted">BPM</h6>
-                    <p class="card-text fs-2 mb-0">@_latest.Bpm</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card text-bg-light">
-                <div class="card-body">
-                    <h6 class="card-subtitle text-muted">GSR</h6>
-                    <p class="card-text fs-2 mb-0">@_latest.Gsr</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card text-bg-light">
-                <div class="card-body">
-                    <h6 class="card-subtitle text-muted">Skin Temp (°C)</h6>
-                    <p class="card-text fs-2 mb-0">@(_latest.SkinTemp?.ToString("F1") ?? "-")</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card text-bg-light">
-                <div class="card-body">
-                    <h6 class="card-subtitle text-muted">Timestamp</h6>
-                    <p class="card-text mb-0">@_latest.Timestamp.LocalDateTime.ToString("HH:mm:ss")</p>
-                </div>
-            </div>
-        </div>
-    </div>
-}
-
-<h3>최근 수신 (최대 20개)</h3>
-<table class="table table-sm table-striped">
-    <thead>
-        <tr>
-            <th>Time</th>
-            <th>BPM</th>
-            <th>GSR</th>
-            <th>Temp</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var item in _recent)
-        {
-            <tr>
-                <td>@item.Timestamp.LocalDateTime.ToString("HH:mm:ss")</td>
-                <td>@item.Bpm</td>
-                <td>@item.Gsr</td>
-                <td>@(item.SkinTemp?.ToString("F1") ?? "-")</td>
-            </tr>
-        }
-    </tbody>
-</table>
 
 @code {
     private const int MaxRecent = 20;
@@ -136,10 +196,24 @@ else
     private HubConnection? _connection;
     private BioSignal? _latest;
     private TensionReading? _tension;
+    private EmotionReading? _emotion;
     private readonly LinkedList<BioSignal> _recent = new();
+
+    // PC MJPEG stream URL (e.g. http://192.168.0.50:8080). Null when unconfigured.
+    private string? _camUrl;
+
+    private bool IsConnected => _connection?.State == HubConnectionState.Connected;
+
+    // Drive the heartbeat animation speed from the live BPM (seconds per beat).
+    private string BeatDuration =>
+        (_latest is { Bpm: > 0 } s ? (60.0 / s.Bpm) : 1.0)
+            .ToString("0.000", CultureInfo.InvariantCulture) + "s";
 
     protected override async Task OnInitializedAsync()
     {
+        var cam = Config["Camera:StreamUrl"];
+        _camUrl = string.IsNullOrWhiteSpace(cam) ? null : cam;
+
         _connection = new HubConnectionBuilder()
             .WithUrl(Nav.ToAbsoluteUri(BioSignalHub.Path))
             .WithAutomaticReconnect()
@@ -162,12 +236,22 @@ else
             await InvokeAsync(StateHasChanged);
         });
 
+        _connection.On<EmotionReading>(BioSignalHub.EmotionUpdated, async reading =>
+        {
+            _emotion = reading;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        _connection.Reconnected += _ => InvokeAsync(StateHasChanged);
+        _connection.Closed += _ => InvokeAsync(StateHasChanged);
+
         await _connection.StartAsync();
+        await InvokeAsync(StateHasChanged);
     }
 
     private static string StateLabel(TensionState state) => state switch
     {
-        TensionState.Calibrating => "보정 중",
+        TensionState.Calibrating => "Calibrating",
         TensionState.Relaxed => "Relaxed",
         TensionState.Focused => "Focused",
         TensionState.Stressed => "Stressed",
@@ -177,26 +261,31 @@ else
     private static string StateEmoji(TensionState state) => state switch
     {
         TensionState.Calibrating => "⏳",
-        TensionState.Relaxed => "😌",
-        TensionState.Focused => "😤",
-        TensionState.Stressed => "🔥",
+        TensionState.Relaxed => "😏",
+        TensionState.Focused => "🥺",
+        TensionState.Stressed => "🥵",
         _ => string.Empty,
     };
 
-    private static string StateBadgeClass(TensionState state) => state switch
+    private static double EmotionPct(EmotionReading e) =>
+        e.Scores.TryGetValue(e.Dominant, out var v) ? v : 0;
+
+    private static string EmotionEmoji(string emotion) => emotion switch
     {
-        TensionState.Relaxed => "bg-success",
-        TensionState.Focused => "bg-warning text-dark",
-        TensionState.Stressed => "bg-danger",
-        _ => "bg-secondary",
+        "angry" => "😠",
+        "fear" => "😱",
+        "happy" => "😄",
+        "surprise" => "😲",
+        "neutral" => "😐",
+        _ => "🙂",
     };
 
-    private static string StateProgressClass(TensionState state) => state switch
+    private static string StateColorVar(TensionState state) => state switch
     {
-        TensionState.Relaxed => "bg-success",
-        TensionState.Focused => "bg-warning",
-        TensionState.Stressed => "bg-danger",
-        _ => "bg-secondary",
+        TensionState.Relaxed => "var(--st-relaxed)",
+        TensionState.Focused => "var(--st-focused)",
+        TensionState.Stressed => "var(--st-stressed)",
+        _ => "var(--st-calibrating)",
     };
 
     public async ValueTask DisposeAsync()

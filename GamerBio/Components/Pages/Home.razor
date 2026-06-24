@@ -1,7 +1,56 @@
-﻿@page "/"
+@page "/"
 
-<PageTitle>Home</PageTitle>
+<PageTitle>GamerBio · Biometric Telemetry</PageTitle>
 
-<h1>Hello, world!</h1>
+<div class="home">
+    <section class="hero">
+        <div class="hud-eyebrow">Wearable · ESP32-S3 → Raspberry Pi 5</div>
+        <h1 class="hero-title">
+            Real-time <span class="accent">biometric</span><br />
+            telemetry for gamers.
+        </h1>
+        <p class="hero-sub">
+            심박수 · 피부전도도 · 피부온도를 실시간으로 수집·융합해 
+            플레이어의 <strong>긴장 상태</strong>를 분석하고 시청자와 공유합니다.
+        </p>
 
-Welcome to your new app.
+        <div class="hero-cta">
+            <a class="btn-hud primary" href="dashboard">
+                <span class="ecg-mini" aria-hidden="true">♥</span> 라이브 대시보드 열기
+            </a>
+        </div>
+    </section>
+
+    <section class="pipe">
+        <div class="hud-panel node">
+            <div class="node-ix mono">01</div>
+            <div class="node-name">Wearable</div>
+            <p>ESP32-S3 · FreeRTOS<br />MAX30102 · GSR · DS18B20</p>
+            <div class="node-tag mono v-heart">SENSE</div>
+        </div>
+        <div class="pipe-arrow mono">→</div>
+        <div class="hud-panel node">
+            <div class="node-ix mono">02</div>
+            <div class="node-name">RPi5 Server</div>
+            <p>ASP.NET 10 · SignalR<br />PostgreSQL 17</p>
+            <div class="node-tag mono v-gsr">FUSE</div>
+        </div>
+        <div class="pipe-arrow mono">→</div>
+        <div class="hud-panel node">
+            <div class="node-ix mono">03</div>
+            <div class="node-name">Dashboard</div>
+            <p>Blazor Server<br />Discord 알림 · MJPEG</p>
+            <div class="node-tag mono v-temp">SHARE</div>
+        </div>
+    </section>
+
+    <section class="states">
+        <div class="hud-eyebrow">Tension classification</div>
+        <div class="state-row">
+            <span class="chip s-relaxed">😏 Relaxed</span>
+            <span class="chip s-focused">🥺 Focused</span>
+            <span class="chip s-stressed">🥵 Stressed</span>
+            <span class="chip s-calib">⏳ Calibrating</span>
+        </div>
+    </section>
+</div>

@@ -1,0 +1,228 @@
+@page "/gallery"
+@rendermode InteractiveServer
+@using GamerBio.Data
+@using GamerBio.Hubs
+@using GamerBio.Models
+@using GamerBio.Services
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.EntityFrameworkCore
+@inject IServiceScopeFactory ScopeFactory
+@inject GalleryStorage Storage
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<PageTitle>Gallery · GamerBio</PageTitle>
+
+<div class="gallery">
+
+    <header class="gal-head">
+        <div>
+            <div class="hud-eyebrow">Media Archive</div>
+            <h1 class="gal-title">Gallery</h1>
+        </div>
+        <div class="gal-count mono">@_photos.Count PHOTOS</div>
+    </header>
+
+    <!-- ===== Uploader ===== -->
+    <section class="hud-panel uploader">
+        <div class="up-row">
+            <label class="up-drop">
+                <InputFile OnChange="OnFilesSelected" multiple accept="image/*" disabled="@_busy" />
+                <span class="up-ico">@(_busy ? "⏳" : "⬆")</span>
+                <span class="up-text">
+                    <strong>@(_busy ? "업로드 중…" : "사진 선택 또는 드래그")</strong>
+                    <small class="mono">JPG · PNG · GIF · WEBP · 최대 15MB</small>
+                </span>
+            </label>
+
+            <div class="up-caption">
+                <label class="hud-eyebrow" for="cap">Caption (optional)</label>
+                <input id="cap" class="up-input mono" maxlength="500"
+                       placeholder="설명을 입력하세요…"
+                       @bind="_caption" @bind:event="oninput" disabled="@_busy" />
+            </div>
+        </div>
+
+        @if (_message is not null)
+        {
+            <div class="up-msg mono @(_isError ? "err" : "ok")">@_message</div>
+        }
+    </section>
+
+    <!-- ===== Grid ===== -->
+    @if (_photos.Count == 0)
+    {
+        <section class="hud-panel gal-empty mono">
+            아직 업로드된 사진이 없습니다 · 위에서 사진을 추가하세요
+        </section>
+    }
+    else
+    {
+        <section class="grid">
+            @foreach (var p in _photos)
+            {
+                <figure class="hud-panel card">
+                    <a class="card-link" href="@MediaUrl(p)" target="_blank" rel="noopener">
+                        <img class="card-img" src="@MediaUrl(p)" alt="@(p.Caption ?? p.OriginalName)" loading="lazy" />
+                    </a>
+                    <figcaption class="card-meta">
+                        <div class="card-caption">@(string.IsNullOrWhiteSpace(p.Caption) ? p.OriginalName : p.Caption)</div>
+                        <div class="card-sub mono">
+                            <span>@p.UploadedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</span>
+                            <span>@FormatSize(p.SizeBytes)</span>
+                        </div>
+                    </figcaption>
+                    <button class="card-del" title="삭제" @onclick="() => DeleteAsync(p)" disabled="@_busy">✕</button>
+                </figure>
+            }
+        </section>
+    }
+</div>
+
+@code {
+    private readonly List<GalleryPhoto> _photos = new();
+    private string? _caption;
+    private bool _busy;
+    private string? _message;
+    private bool _isError;
+    private HubConnection? _connection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+
+        // Live-prepend auto-captured photos (e.g. surprise spikes) as they arrive.
+        _connection = new HubConnectionBuilder()
+            .WithUrl(Nav.ToAbsoluteUri(BioSignalHub.Path))
+            .WithAutomaticReconnect()
+            .Build();
+
+        _connection.On<GalleryPhoto>(BioSignalHub.GalleryPhotoAdded, async photo =>
+        {
+            if (_photos.All(p => p.Id != photo.Id))
+            {
+                _photos.Insert(0, photo);
+                await InvokeAsync(StateHasChanged);
+            }
+        });
+
+        await _connection.StartAsync();
+    }
+
+    private static string MediaUrl(GalleryPhoto p) => $"/gallery/media/{p.Id}";
+
+    private async Task ReloadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BioMonitorContext>();
+        var items = await db.GalleryPhotos
+            .OrderByDescending(x => x.UploadedAt)
+            .ToListAsync();
+        _photos.Clear();
+        _photos.AddRange(items);
+    }
+
+    private async Task OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _busy = true;
+        _message = null;
+        var saved = 0;
+        var failed = 0;
+
+        try
+        {
+            foreach (var file in e.GetMultipleFiles(maximumFileCount: 50))
+            {
+                if (!GalleryStorage.IsAllowed(file.Name, out var contentType))
+                {
+                    failed++;
+                    continue;
+                }
+                if (file.Size > GalleryStorage.MaxFileBytes)
+                {
+                    failed++;
+                    continue;
+                }
+
+                try
+                {
+                    await using var stream = file.OpenReadStream(GalleryStorage.MaxFileBytes);
+                    var storedName = await Storage.SaveAsync(file.Name, stream, CancellationToken.None);
+
+                    var photo = new GalleryPhoto
+                    {
+                        StoredName = storedName,
+                        OriginalName = file.Name,
+                        ContentType = contentType,
+                        SizeBytes = file.Size,
+                        Caption = string.IsNullOrWhiteSpace(_caption) ? null : _caption.Trim(),
+                        UploadedAt = DateTimeOffset.UtcNow,
+                    };
+
+                    using var scope = ScopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<BioMonitorContext>();
+                    db.GalleryPhotos.Add(photo);
+                    await db.SaveChangesAsync();
+                    saved++;
+                }
+                catch (Exception)
+                {
+                    failed++;
+                }
+            }
+
+            _caption = null;
+            await ReloadAsync();
+
+            _isError = saved == 0;
+            _message = failed == 0
+                ? $"{saved}장 업로드 완료"
+                : $"{saved}장 업로드 · {failed}장 실패 (형식/크기 확인)";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(GalleryPhoto photo)
+    {
+        _busy = true;
+        try
+        {
+            using (var scope = ScopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<BioMonitorContext>();
+                var row = await db.GalleryPhotos.FindAsync(photo.Id);
+                if (row is not null)
+                {
+                    db.GalleryPhotos.Remove(row);
+                    await db.SaveChangesAsync();
+                }
+            }
+            Storage.Delete(photo);
+            await ReloadAsync();
+            _message = "삭제되었습니다";
+            _isError = false;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        >= 1024 * 1024 => $"{bytes / 1024d / 1024d:0.0} MB",
+        >= 1024 => $"{bytes / 1024d:0} KB",
+        _ => $"{bytes} B",
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
+    }
+}

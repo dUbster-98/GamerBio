@@ -1,36 +1,56 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">GamerBio</a>
-    </div>
+<div class="brand-row">
+    <a class="brand" href="">
+        <span class="brand-mark">
+            <svg viewBox="0 0 40 24" aria-hidden="true">
+                <path d="M0 12 H9 L12 12 L15 4 L19 20 L22 8 L24 12 H40"
+                      fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </span>
+        <span class="brand-text">
+            <strong>GAMER</strong><em>BIO</em>
+            <small>biometric telemetry</small>
+        </span>
+    </a>
 </div>
 
 <input type="checkbox" title="Navigation menu" class="navbar-toggler" />
 
 <div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
     <nav class="nav flex-column">
-        <div class="nav-item px-3">
+        <div class="nav-section">menu</div>
+
+        <div class="nav-item">
             <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
+                <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" />
+                </svg>
+                <span>Overview</span>
             </NavLink>
         </div>
 
-        <div class="nav-item px-3">
+        <div class="nav-item">
             <NavLink class="nav-link" href="dashboard">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Dashboard
+                <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 12h4l2 6 4-14 2 8h6" />
+                </svg>
+                <span>Live Dashboard</span>
             </NavLink>
         </div>
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Counter
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="weather">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
+        <div class="nav-item">
+            <NavLink class="nav-link" href="gallery">
+                <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <circle cx="8.5" cy="8.5" r="1.5" />
+                    <path d="M21 15l-5-5L5 21" />
+                </svg>
+                <span>Gallery</span>
             </NavLink>
         </div>
     </nav>
-</div>
 
+    <div class="nav-foot mono">
+        <span class="foot-dot"></span> v0.2 · .NET 10
+    </div>
+</div>
