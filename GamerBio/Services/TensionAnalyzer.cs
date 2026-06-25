@@ -33,7 +33,7 @@ public class TensionAnalyzer
     {
         ["angry"] = 1.0,
         ["fear"] = 1.0,
-        ["surprise"] = 0.5,
+        ["surprise"] = 2.0,
         ["neutral"] = 0.0,
         ["happy"] = 0.0,
     };
@@ -59,6 +59,16 @@ public class TensionAnalyzer
             }
 
             return Compute(sample.ReceivedAt);
+        }
+    }
+
+    /// <summary>Recompute and return the current fused state without adding a
+    /// new sample. Used by read-only consumers like the Discord /status command.</summary>
+    public TensionReading Latest()
+    {
+        lock (_lock)
+        {
+            return Compute(DateTimeOffset.UtcNow);
         }
     }
 

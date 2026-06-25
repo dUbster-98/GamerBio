@@ -22,7 +22,9 @@
       "PowerShell(python --version)",
       "PowerShell(python -c \"import argparse; print\\('BooleanOptionalAction OK' if hasattr\\(argparse,'BooleanOptionalAction'\\) else 'NOT SUPPORTED'\\)\")",
       "PowerShell(python -m py_compile \"C:\\\\Users\\\\shkim3\\\\Documents\\\\GitHub\\\\GamerBio\\\\deepface\\\\emotion_webcam.py\" 2>&1)",
-      "PowerShell(if \\($LASTEXITCODE -eq 0\\) { \"SYNTAX OK\" } else { \"SYNTAX FAIL\" })"
+      "PowerShell(if \\($LASTEXITCODE -eq 0\\) { \"SYNTAX OK\" } else { \"SYNTAX FAIL\" })",
+      "PowerShell(dotnet add GamerBio *)",
+      "PowerShell(dotnet user-secrets init --project GamerBio; dotnet build GamerBio -c Debug --nologo 2>&1 | Select-Object -Last 15)"
     ]
   }
 }

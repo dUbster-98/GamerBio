@@ -84,7 +84,7 @@ SAD_TO_FEAR_RATIO = 0.7
 #   smoothed = alpha * new + (1 - alpha) * previous
 # Lower alpha = steadier but slower to react; higher = twitchier but snappier.
 # Tune live with --smoothing.
-EMOTION_SMOOTHING = 0.25
+EMOTION_SMOOTHING = 0.2
 
 # ============================================================
 #  실행 기본값 — 여기만 고치면 명령줄 인수 없이 그대로 돌아갑니다.
@@ -96,12 +96,12 @@ EMOTION_SMOOTHING = 0.25
 #   RPi5 프로덕션:     "http://<RPi-IP>:5000/api/gallery/capture"
 DEFAULT_CAPTURE_URL = "https://localhost:7211/api/gallery/capture"
 DEFAULT_CAPTURE_EMOTION = "surprise"   # 캡처를 유발할 감정
-DEFAULT_CAPTURE_THRESHOLD = 90.0       # raw 점수(0~100) 임계값 — 잘 안 잡히면 낮추기
-DEFAULT_CAPTURE_COOLDOWN = 3.0         # 캡처 최소 간격(초)
+DEFAULT_CAPTURE_THRESHOLD = 80.0       # raw 점수(0~100) 임계값 — 잘 안 잡히면 낮추기
+DEFAULT_CAPTURE_COOLDOWN = 1.0         # 캡처 최소 간격(초)
 
 # 대시보드 감정 융합용 엔드포인트. None 이면 송신 안 함.
 #   예: "https://localhost:7211/api/emotion"
-DEFAULT_POST_URL = None
+DEFAULT_POST_URL = "https://localhost:7211/api/emotion"
 
 # 자체서명 https(localhost) 인증서 검증 건너뛰기. 로컬 https 테스트는 True,
 # 프로덕션(평문 http)에서는 False 권장. (명령줄 --no-insecure 로 끌 수 있음)

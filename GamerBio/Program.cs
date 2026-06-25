@@ -17,6 +17,12 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<TensionAnalyzer>();
 builder.Services.AddSingleton<GalleryStorage>();
 
+// Discord bot runs as a hosted service in this same host so it can share the
+// TensionAnalyzer singleton. Registered once and resolved as both the hosted
+// service and an injectable singleton (so endpoints can push alerts to it).
+builder.Services.AddSingleton<DiscordBotService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscordBotService>());
+
 // HttpClient used by the /cam reverse proxy. MJPEG is a long-lived stream, so
 // the default 100s timeout must be disabled or it would kill the feed.
 builder.Services.AddHttpClient("camera", c => c.Timeout = Timeout.InfiniteTimeSpan);
@@ -168,6 +174,7 @@ api.MapPost("/biosignal", async (
     BioMonitorContext db,
     IHubContext<BioSignalHub> hub,
     TensionAnalyzer analyzer,
+    DiscordBotService bot,
     ILogger<Program> logger) =>
 {
     var entity = new BioSignal
@@ -188,6 +195,7 @@ api.MapPost("/biosignal", async (
 
     await hub.Clients.All.SendAsync(BioSignalHub.BioSignalReceived, entity);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
+    await bot.NotifyTensionAsync(tension);
 
     return Results.Ok(new { id = entity.Id, receivedAt = entity.ReceivedAt, tension });
 });
@@ -249,7 +257,8 @@ api.MapPost("/gallery/capture", async (
 api.MapPost("/emotion", async (
     EmotionDto dto,
     IHubContext<BioSignalHub> hub,
-    TensionAnalyzer analyzer) =>
+    TensionAnalyzer analyzer,
+    DiscordBotService bot) =>
 {
     var reading = new EmotionReading(
         string.IsNullOrWhiteSpace(dto.Dominant) ? "neutral" : dto.Dominant,
@@ -261,6 +270,7 @@ api.MapPost("/emotion", async (
 
     await hub.Clients.All.SendAsync(BioSignalHub.EmotionUpdated, reading);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
+    await bot.NotifyTensionAsync(tension);
 
     return Results.Ok(new { tension });
 });
