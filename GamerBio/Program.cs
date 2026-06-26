@@ -16,6 +16,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<TensionAnalyzer>();
 builder.Services.AddSingleton<GalleryStorage>();
+builder.Services.AddSingleton<RandomPhotoStore>();
 
 // Discord bot runs as a hosted service in this same host so it can share the
 // TensionAnalyzer singleton. Registered once and resolved as both the hosted

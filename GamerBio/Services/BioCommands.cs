@@ -10,8 +10,13 @@ namespace GamerBio.Services;
 public class BioCommands : InteractionModuleBase<SocketInteractionContext>
 {
     private readonly TensionAnalyzer _analyzer;
+    private readonly RandomPhotoStore _photos;
 
-    public BioCommands(TensionAnalyzer analyzer) => _analyzer = analyzer;
+    public BioCommands(TensionAnalyzer analyzer, RandomPhotoStore photos)
+    {
+        _analyzer = analyzer;
+        _photos = photos;
+    }
 
     [SlashCommand("status", "현재 게이머 텐션 상태를 보여줍니다")]
     public async Task Status()
@@ -28,5 +33,18 @@ public class BioCommands : InteractionModuleBase<SocketInteractionContext>
     {
         var t = _analyzer.Latest();
         await RespondAsync($"❤️ BPM 기여 점수: {t.BpmScore}/100 (상태: {t.State})");
+    }
+
+    [SlashCommand("가챠", "랜덤 사진 한 장을 뽑아줍니다")]
+    public async Task Random()
+    {
+        var path = _photos.PickRandom();
+        if (path is null)
+        {
+            await RespondAsync("📭 가챠 저장소가 비어 있어요.");
+            return;
+        }
+
+        await RespondWithFileAsync(path, text: $"🎲 오늘의 랜덤 사진: **{Path.GetFileName(path)}**");
     }
 }
