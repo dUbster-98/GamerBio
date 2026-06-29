@@ -24,7 +24,16 @@
       "PowerShell(python -m py_compile \"C:\\\\Users\\\\shkim3\\\\Documents\\\\GitHub\\\\GamerBio\\\\deepface\\\\emotion_webcam.py\" 2>&1)",
       "PowerShell(if \\($LASTEXITCODE -eq 0\\) { \"SYNTAX OK\" } else { \"SYNTAX FAIL\" })",
       "PowerShell(dotnet add GamerBio *)",
-      "PowerShell(dotnet user-secrets init --project GamerBio; dotnet build GamerBio -c Debug --nologo 2>&1 | Select-Object -Last 15)"
+      "PowerShell(dotnet user-secrets init --project GamerBio; dotnet build GamerBio -c Debug --nologo 2>&1 | Select-Object -Last 15)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python -c \"import genie_tts, inspect, os; print\\('FILE', genie_tts.__file__\\); print\\('FUNCS', [n for n in dir\\(genie_tts\\) if not n.startswith\\('_'\\)]\\)\")",
+      "Read(//c/Users/shkim3/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/LocalCache/local-packages/Python311/site-packages/genie_tts/**)",
+      "Read(//c/Users/shkim3/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/LocalCache/local-packages/Python311/site-packages/genie_tts/Core/**)",
+      "Bash(python *)",
+      "Bash(pip list *)",
+      "Bash(pip uninstall *)",
+      "Bash(pip install *)"
     ]
   }
 }
