@@ -17,11 +17,14 @@ appsettings.*.local.json
 # Publish output (built per-deployment, can be regenerated)
 **/publish/
 /publish-arm64
-/tts/recordings
 
 # tts models
 /tts/CharacterModels
 /tts/GenieData
+/tts/recordings
+/tts/models
+/tts/genie_env
+/tts/.last_synth.wav
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
