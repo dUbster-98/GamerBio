@@ -63,7 +63,7 @@ import genie_tts as genie
 #   ref_dir : 레퍼런스 음성(wav) 들이 든 폴더. 각 X.wav 옆에 같은 이름의 X.txt
 #             (그 음성이 실제 말한 문장 = 전사)를 두면 자동 인식된다.
 #             실행 중 Ctrl+Alt+E 로 폴더 안 레퍼런스들을 순환 전환(즉시 적용).
-_MODELS_ROOT = r"C:\Users\tjdgu\source\repos\GamerBio\tts\CharacterModels\v2ProPlus"
+_MODELS_ROOT = r"./\CharacterModels\v2ProPlus"
 
 CHARACTERS = {
     "hutao": {
@@ -71,7 +71,7 @@ CHARACTERS = {
         "ref_dir":   rf"{_MODELS_ROOT}\hutao\prompt_wav",
         "language":  "Korean",
     },
-    # 예시) 캐릭터를 더 추가하려면 아래 형태로 한 항목씩:
+
     "mika": {
         "model_dir": rf"{_MODELS_ROOT}\mika\tts_models",
         "ref_dir":   rf"{_MODELS_ROOT}\mika\prompt_wav",
