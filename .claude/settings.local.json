@@ -43,7 +43,14 @@
       "Bash(pip show *)",
       "WebFetch(domain:pypi.org)",
       "Bash(gh api *)",
-      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)"
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "PowerShell(dotnet run *)",
+      "Bash(seq 1 30)",
+      "Bash(break)",
+      "Bash(sleep 1)",
+      "Bash(taskkill //F //IM GamerBio.exe)",
+      "PowerShell(dotnet build GamerBio/GamerBio.csproj -v q --nologo && dotnet run --project GamerBio --launch-profile http --no-build &)",
+      "Bash(tasklist //FI \"IMAGENAME eq GamerBio.exe\")"
     ]
   }
 }

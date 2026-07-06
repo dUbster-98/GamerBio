@@ -94,7 +94,7 @@ public class DiscordBotService : BackgroundService
 
     /// <summary>
     /// Push a stress alert to the configured channel, but only on a transition
-    /// into the Stressed state (deduplicated against the last notified state).
+    /// into the Stressed or Deadly state (deduplicated against the last notified state).
     /// </summary>
     public async Task NotifyTensionAsync(TensionReading tension)
     {
@@ -104,15 +104,19 @@ public class DiscordBotService : BackgroundService
         }
         _lastNotified = tension.State;
 
-        if (tension.State != TensionState.Stressed || _alertChannelId == 0)
+        if (tension.State is not (TensionState.Stressed or TensionState.Deadly)
+            || _alertChannelId == 0)
         {
             return;
         }
 
+        string message = tension.State == TensionState.Deadly
+            ? $"☠️ **위험 수준 텐션!** 텐션 {tension.Score}/100 · 감정: {tension.DominantEmotion ?? "—"}"
+            : $"🔥 **스트레스 감지!** 텐션 {tension.Score}/100 · 감정: {tension.DominantEmotion ?? "—"}";
+
         if (_client.GetChannel(_alertChannelId) is IMessageChannel channel)
         {
-            await channel.SendMessageAsync(
-                $"🔥 **스트레스 감지!** 텐션 {tension.Score}/100 · 감정: {tension.DominantEmotion ?? "—"}");
+            await channel.SendMessageAsync(message);
         }
     }
 }

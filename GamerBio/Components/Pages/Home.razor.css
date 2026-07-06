@@ -130,4 +130,5 @@
 .s-relaxed  { color: var(--st-relaxed); }
 .s-focused  { color: var(--st-focused); }
 .s-stressed { color: var(--st-stressed); }
+.s-deadly   { color: var(--st-deadly); }
 .s-calib    { color: var(--st-calibrating); }

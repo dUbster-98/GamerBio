@@ -15,7 +15,7 @@
 
 ---
 
-## 📍 현재 진행 상황 스냅샷 (2026-06-25)
+## 📍 현재 진행 상황 스냅샷 (2026-07-06)
 
 | 항목 | 상태 |
 |------|------|
@@ -28,7 +28,7 @@
 | EF Core 마이그레이션 (`biosignals` 테이블) | ✅ 앱 시작 시 자동 적용 |
 | 배포 파이프라인 | ✅ PC `dotnet publish` → `scp` → systemd restart |
 | SignalR Hub (`BioSignalHub`) + Blazor 실시간 푸시 | ✅ `BioSignalReceived` / `TensionUpdated` 동작 |
-| `TensionAnalyzer` 멀티모달 융합 + 상태 분류 | ✅ BPM/GSR/저변동성/**감정** 가중 융합 → Relaxed/Focused/Stressed |
+| `TensionAnalyzer` 멀티모달 융합 + 상태 분류 | ✅ BPM/GSR/저변동성/**감정** 가중 융합 → Relaxed/Focused/Stressed/**Deadly** |
 | Blazor `/dashboard` 라이브 대시보드 | ✅ 캠 패널 + 감정 라벨 + 텐션 게이지 + 바이탈 + 피드 |
 | **[PC]** DeepFace 감정 분석 앱 (`deepface/emotion_webcam.py`) | ✅ 게임 특화 최적화 (아래 참고) |
 | **[PC]** MJPEG 스트림 서버 (Python, `0.0.0.0:8080`) | ✅ 오버레이 영상 `multipart/x-mixed-replace` 서빙 |
@@ -40,7 +40,8 @@
 | 공개 도메인 `https://bio-monitor.uk` (Cloudflare Tunnel) | ✅ 대시보드 + 캠 영상 외부 접속 확인 |
 | ESP32 펌웨어 | ⏳ 부품 대기 중 (더미 데이터로 검증 중) |
 | 감정 DB 영속화 (`Emotion` 엔티티) | ⏳ 미착수 (현재 메모리상 최신값만 융합) |
-| Discord 봇 (`DiscordBotService`) — 알림 + 슬래시 명령 | ✅ 호스팅 서비스로 통합, `/status`·`/bpm` + Stressed 진입 알림 (로컬 빌드 검증) |
+| Discord 봇 (`DiscordBotService`) — 알림 + 슬래시 명령 | ✅ 호스팅 서비스로 통합, `/status`·`/bpm` + Stressed/**Deadly** 진입 알림 (로컬 빌드 검증) |
+| **Deadly 단계 + 이벤트 로그** (`deadly_events` 테이블, `/event` 페이지) | ✅ 진입 시각+파라미터 DB 저장, 실시간 페이지 갱신 (로컬 검증) |
 | PC 시선·졸음(MediaPipe) / MQTT | ⏳ 미착수 |
 
 **DeepFace 감정 분석 앱 최적화:**
@@ -72,6 +73,17 @@
 - **슬래시 명령 (양방향)**: `BioCommands` 모듈의 `/status`(융합 텐션 전체), `/bpm`(심박 기여) → `TensionAnalyzer.Latest()`(신규 추가한 읽기 전용 스레드 안전 접근자)로 조회. 글로벌 등록은 반영 ~1시간 → 개발 중엔 `RegisterCommandsToGuildAsync(길드ID)`로 즉시 반영
 - **알림 (단방향)**: `/api/biosignal`·`/api/emotion`이 `TensionUpdated` 푸시 직후 `bot.NotifyTensionAsync(tension)` 호출. **상태 전환 시에만** 발송(`_lastNotified` 가드)하여 도배 방지, `Stressed` 진입 시 알림 채널에 메시지
 - **비밀 설정**: `Discord:Token`, `Discord:AlertChannelId`. PC 개발은 user-secrets(`UserSecretsId` csproj 등록됨), RPi 배포는 `appsettings.Production.json`(gitignore). 미설정 시 봇 비활성화 + 경고 로그 (앱은 정상 기동)
+
+**Deadly 단계 + 이벤트 로그 (2026-07-06):**
+- `TensionState`에 **Deadly** 추가: `<30 Relaxed / <65 Focused / <85 Stressed / ≥85 Deadly` (`StressedCeiling=85`). 대시보드·홈 범례·Discord 알림(☠️ 전용 메시지) 반영
+- **Deadly 진입 이벤트 DB 영속화**: `DeadlyEvent` 엔티티 → `deadly_events` 테이블(마이그레이션 `AddDeadlyEvents`). 진입 시각 + 융합 점수 + 요소별 점수 + 당시 원시 바이탈(BPM/GSR) 저장. `TensionAnalyzer`가 상태 전환을 락 안에서 추적해 **진입 순간에만 1건** 기록 (`UpdateBio`/`UpdateEmotion`의 out 파라미터, 읽기 전용 `Latest()`는 관여 안 함). `GET /api/deadly/recent` 조회 지원
+- Blazor `/event` **Event Log 페이지**: 이벤트 행(점수·시각·요소 미터·바이탈) 목록 + SignalR `DeadlyEventRecorded`로 실시간 prepend. `TensionReading`(SignalR 와이어 포맷)과 `DeadlyEvent`(EF 엔티티)는 의도적으로 분리 — 와이어/스키마 독립 진화
+- **융합 로직 개선** (지속 고텐션이 Focused에 갇히던 문제 수정):
+  - GSR 점수 = max(변화율, **절대 수준**) — 지속 각성이 baseline에 흡수돼 0점 되던 문제 해결 (`GsrAbsLow=300`~`GsrAbsHigh=800`, 실센서 단위 확정 시 조정)
+  - **BPM 160+** (`BpmExtreme`) → 표정 무관 Deadly floor
+  - **생체 전용 점수 90+** (`BioOnlyExtreme`) → 무표정이어도 센서 극단이면 Deadly
+  - **30초 감정 창 합산 승격**: 생체 점수(Stressed 수준 65+) + 감정가중치(0.25) × 최근 30초 감정 점수 평균 ≥ 85 → Deadly. 감정 이력을 `EmotionStress` 점수로 저장·평균 (최소 5샘플, fear/angry ×1.0·surprise ×2.0). 단발 fear 노이즈는 무시, 지속 공포만 반영
+  - 카메라 미연결/감정 stale 시 생체 전용 폴백은 기존 유지 (승격 경로만 자연 비활성)
 
 **개발 환경:**
 - PC: Windows 11 + .NET 10 SDK (10.0.201), `dotnet-ef` 10.0.9, Python(OpenCV/DeepFace)
@@ -178,6 +190,7 @@
 😌 Relaxed  : BPM 정상   / HRV 안정  / GSR 낮음  / emotion = neutral or happy
 😤 Focused  : BPM 상승   / HRV 감소  / GSR 상승  / emotion = neutral
 🔥 Stressed : BPM 급상승 / HRV 급감  / GSR 급등  / emotion = angry or fear
+☠️ Deadly   : 융합 85+ 또는 BPM 160+ / 생체 전용 90+ / 센서 Stressed + 30초 공포 지속
 😴 Drowsy   : 눈 깜빡임 증가 / EAR 수치 임계값 이하 / emotion = neutral (무표정 지속)
 
 ※ 표정 데이터 (DeepFace, PC) + 생체 데이터 (ESP32) 융합으로 판정 정확도 향상

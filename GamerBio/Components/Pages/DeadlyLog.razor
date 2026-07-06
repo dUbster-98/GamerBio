@@ -1,0 +1,120 @@
+@page "/event"
+@rendermode InteractiveServer
+@using GamerBio.Data
+@using GamerBio.Hubs
+@using GamerBio.Models
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.EntityFrameworkCore
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<PageTitle>Event Log · GamerBio</PageTitle>
+
+<div class="deadly">
+
+    <header class="dl-head">
+        <div>
+            <div class="hud-eyebrow">THREAT Archive</div>
+            <h1 class="dl-title">☠️ Event Log</h1>
+        </div>
+        <div class="dl-count mono">@_events.Count EVENTS</div>
+    </header>
+
+    @if (_events.Count == 0)
+    {
+        <section class="hud-panel dl-empty mono">
+            아직 기록된 이벤트가 없습니다
+        </section>
+    }
+    else
+    {
+        <section class="dl-list">
+            @foreach (var e in _events)
+            {
+                <article class="hud-panel row">
+                    <div class="row-score mono">
+                        <strong>@e.Score</strong><small>/100</small>
+                    </div>
+
+                    <div class="row-main">
+                        <div class="row-time mono">@e.OccurredAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</div>
+                        <div class="row-factors">
+                            @foreach (var (label, val) in Factors(e))
+                            {
+                                <div class="factor">
+                                    <span class="f-label mono">@label</span>
+                                    <span class="f-bar"><span class="f-fill" style="width:@(val)%"></span></span>
+                                    <span class="f-val mono">@val</span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="row-vitals mono">
+                        <span class="v-bpm">♥ @e.Bpm BPM</span>
+                        <span class="v-gsr">GSR @e.Gsr</span>
+                        <span class="v-emo">@(e.DominantEmotion ?? "—")</span>
+                    </div>
+                </article>
+            }
+        </section>
+    }
+</div>
+
+@code {
+    private const int MaxRows = 200;
+
+    private readonly List<DeadlyEvent> _events = new();
+    private HubConnection? _connection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+
+        // Live-prepend Deadly entries as the server records them.
+        _connection = new HubConnectionBuilder()
+            .WithUrl(Nav.ToAbsoluteUri(BioSignalHub.Path))
+            .WithAutomaticReconnect()
+            .Build();
+
+        _connection.On<DeadlyEvent>(BioSignalHub.DeadlyEventRecorded, async e =>
+        {
+            if (_events.All(x => x.Id != e.Id))
+            {
+                _events.Insert(0, e);
+                await InvokeAsync(StateHasChanged);
+            }
+        });
+
+        await _connection.StartAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BioMonitorContext>();
+        var items = await db.DeadlyEvents
+            .OrderByDescending(x => x.OccurredAt)
+            .Take(MaxRows)
+            .ToListAsync();
+        _events.Clear();
+        _events.AddRange(items);
+    }
+
+    private static IEnumerable<(string Label, int Value)> Factors(DeadlyEvent e)
+    {
+        yield return ("BPM", e.BpmScore);
+        yield return ("GSR", e.GsrScore);
+        yield return ("VAR", e.LowVariabilityScore);
+        yield return ("EMO", e.EmotionScore);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
+    }
+}

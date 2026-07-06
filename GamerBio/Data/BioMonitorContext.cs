@@ -7,6 +7,7 @@ public class BioMonitorContext(DbContextOptions<BioMonitorContext> options) : Db
 {
     public DbSet<BioSignal> BioSignals => Set<BioSignal>();
     public DbSet<GalleryPhoto> GalleryPhotos => Set<GalleryPhoto>();
+    public DbSet<DeadlyEvent> DeadlyEvents => Set<DeadlyEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -14,6 +15,13 @@ public class BioMonitorContext(DbContextOptions<BioMonitorContext> options) : Db
         {
             e.ToTable("biosignals");
             e.HasIndex(x => x.Timestamp);
+        });
+
+        modelBuilder.Entity<DeadlyEvent>(e =>
+        {
+            e.ToTable("deadly_events");
+            e.HasIndex(x => x.OccurredAt);
+            e.Property(x => x.DominantEmotion).HasMaxLength(32);
         });
 
         modelBuilder.Entity<GalleryPhoto>(e =>

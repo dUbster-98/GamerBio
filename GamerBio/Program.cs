@@ -189,7 +189,11 @@ api.MapPost("/biosignal", async (
     db.BioSignals.Add(entity);
     await db.SaveChangesAsync();
 
-    var tension = analyzer.UpdateBio(entity);
+    var tension = analyzer.UpdateBio(entity, out var deadlyEntry);
+    if (deadlyEntry is not null)
+    {
+        await RecordDeadlyEntryAsync(deadlyEntry, db, hub, logger);
+    }
 
     logger.LogInformation("Biosignal saved: id={Id} BPM={Bpm} GSR={Gsr} Temp={Temp} → tension={State}({Score})",
         entity.Id, entity.Bpm, entity.Gsr, entity.SkinTemp, tension.State, tension.Score);
@@ -205,6 +209,15 @@ api.MapGet("/biosignal/recent", async (BioMonitorContext db, int take = 20) =>
 {
     var items = await db.BioSignals
         .OrderByDescending(x => x.Timestamp)
+        .Take(Math.Clamp(take, 1, 200))
+        .ToListAsync();
+    return Results.Ok(items);
+});
+
+api.MapGet("/deadly/recent", async (BioMonitorContext db, int take = 20) =>
+{
+    var items = await db.DeadlyEvents
+        .OrderByDescending(x => x.OccurredAt)
         .Take(Math.Clamp(take, 1, 200))
         .ToListAsync();
     return Results.Ok(items);
@@ -257,9 +270,11 @@ api.MapPost("/gallery/capture", async (
 
 api.MapPost("/emotion", async (
     EmotionDto dto,
+    BioMonitorContext db,
     IHubContext<BioSignalHub> hub,
     TensionAnalyzer analyzer,
-    DiscordBotService bot) =>
+    DiscordBotService bot,
+    ILogger<Program> logger) =>
 {
     var reading = new EmotionReading(
         string.IsNullOrWhiteSpace(dto.Dominant) ? "neutral" : dto.Dominant,
@@ -267,7 +282,11 @@ api.MapPost("/emotion", async (
         DateTimeOffset.UtcNow);
 
     // Fuse the emotion with the most recent biosignal and re-broadcast tension.
-    var tension = analyzer.UpdateEmotion(reading);
+    var tension = analyzer.UpdateEmotion(reading, out var deadlyEntry);
+    if (deadlyEntry is not null)
+    {
+        await RecordDeadlyEntryAsync(deadlyEntry, db, hub, logger);
+    }
 
     await hub.Clients.All.SendAsync(BioSignalHub.EmotionUpdated, reading);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
@@ -277,6 +296,21 @@ api.MapPost("/emotion", async (
 });
 
 app.Run();
+
+// Persist a Deadly-entry snapshot and fan it out to live viewers (the /deadly
+// page prepends it in real time, mirroring the gallery's auto-capture flow).
+static async Task RecordDeadlyEntryAsync(
+    DeadlyEvent entry,
+    BioMonitorContext db,
+    IHubContext<BioSignalHub> hub,
+    ILogger logger)
+{
+    db.DeadlyEvents.Add(entry);
+    await db.SaveChangesAsync();
+    logger.LogWarning("Deadly tension entered: score={Score} BPM={Bpm} GSR={Gsr} emotion={Emotion}",
+        entry.Score, entry.Bpm, entry.Gsr, entry.DominantEmotion ?? "-");
+    await hub.Clients.All.SendAsync(BioSignalHub.DeadlyEventRecorded, entry);
+}
 
 record BioSignalDto(int Bpm, int Gsr, double? SkinTemp, DateTimeOffset Timestamp);
 record EmotionDto(string? Dominant, Dictionary<string, double>? Scores, DateTimeOffset? Timestamp);

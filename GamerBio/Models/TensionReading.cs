@@ -6,6 +6,7 @@ public enum TensionState
     Relaxed,
     Focused,
     Stressed,
+    Deadly,
 }
 
 public record TensionReading(

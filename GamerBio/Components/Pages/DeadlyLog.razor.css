@@ -1,0 +1,117 @@
+.deadly {
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+    max-width: 980px;
+    animation: dl-in 0.5s ease both;
+}
+@keyframes dl-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ---- header -------------------------------------------------- */
+.dl-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.dl-title {
+    margin: 0.3rem 0 0;
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    font-weight: 800;
+}
+.dl-count {
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+/* ---- empty state --------------------------------------------- */
+.dl-empty {
+    padding: 2.2rem 1.4rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+/* ---- event rows ----------------------------------------------- */
+.dl-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+}
+.row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1.2rem;
+    padding: 1rem 1.3rem;
+    border-left: 3px solid var(--st-deadly);
+}
+
+.row-score {
+    min-width: 96px;
+    color: var(--st-deadly);
+    white-space: nowrap;
+}
+.row-score strong { font-size: 1.9rem; font-weight: 700; }
+.row-score small  { color: var(--muted); margin-left: 2px; }
+
+.row-main { flex: 1; min-width: 260px; }
+.row-time {
+    font-size: 0.82rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    margin-bottom: 0.5rem;
+}
+
+/* fusion factor mini-meters */
+.row-factors {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.35rem 1.1rem;
+}
+.factor {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+}
+.f-label { width: 30px; color: var(--muted); letter-spacing: 0.12em; }
+.f-bar {
+    flex: 1;
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(120, 145, 180, 0.18);
+    overflow: hidden;
+}
+.f-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--st-deadly);
+    opacity: 0.85;
+}
+.f-val { width: 26px; text-align: right; color: var(--muted); }
+
+/* raw vitals at the moment of entry */
+.row-vitals {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    text-align: right;
+    white-space: nowrap;
+}
+.v-bpm { color: var(--heart); }
+.v-gsr { color: var(--gsr); }
+.v-emo { color: var(--st-deadly); text-transform: uppercase; letter-spacing: 0.12em; }
+
+@media (max-width: 640px) {
+    .row-vitals { flex-direction: row; gap: 0.9rem; text-align: left; }
+}

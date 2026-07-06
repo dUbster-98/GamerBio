@@ -9,4 +9,5 @@ public class BioSignalHub : Hub
     public const string TensionUpdated = "TensionUpdated";
     public const string EmotionUpdated = "EmotionUpdated";
     public const string GalleryPhotoAdded = "GalleryPhotoAdded";
+    public const string DeadlyEventRecorded = "DeadlyEventRecorded";
 }

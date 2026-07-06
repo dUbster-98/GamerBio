@@ -255,6 +255,7 @@
         TensionState.Relaxed => "Relaxed",
         TensionState.Focused => "Focused",
         TensionState.Stressed => "Stressed",
+        TensionState.Deadly => "Deadly",
         _ => state.ToString(),
     };
 
@@ -262,8 +263,9 @@
     {
         TensionState.Calibrating => "⏳",
         TensionState.Relaxed => "😏",
-        TensionState.Focused => "🥺",
-        TensionState.Stressed => "🥵",
+        TensionState.Focused => "🥵",
+        TensionState.Stressed => "😱",
+        TensionState.Deadly => "☠️",
         _ => string.Empty,
     };
 
@@ -277,7 +279,7 @@
         "happy" => "😄",
         "surprise" => "😲",
         "neutral" => "😐",
-        _ => "🙂",
+        _ => "😐",
     };
 
     private static string StateColorVar(TensionState state) => state switch
@@ -285,6 +287,7 @@
         TensionState.Relaxed => "var(--st-relaxed)",
         TensionState.Focused => "var(--st-focused)",
         TensionState.Stressed => "var(--st-stressed)",
+        TensionState.Deadly => "var(--st-deadly)",
         _ => "var(--st-calibrating)",
     };
 

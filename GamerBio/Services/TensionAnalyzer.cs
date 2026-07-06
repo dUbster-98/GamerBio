@@ -12,8 +12,32 @@ public class TensionAnalyzer
     private const double BpmHigh = 130;
     private const double GsrDeltaMin = 0.0;
     private const double GsrDeltaMax = 0.4;
+    // Absolute GSR band: the delta score above only catches surges (a sustained
+    // high level pushes its own baseline up until the delta reads 0), so the
+    // absolute level keeps sustained arousal visible. Tune once real sensor
+    // units are known (dummy data runs ~100-900).
+    private const double GsrAbsLow = 300;
+    private const double GsrAbsHigh = 800;
     private const double StdDevLow = 2;
     private const double StdDevHigh = 10;
+
+    // A racing heart must not be averaged away by a calm face or flat GSR:
+    // at BpmExtreme+ the composite is floored straight into Deadly territory.
+    private const double BpmExtreme = 160;
+
+    // Likewise for the sensors as a whole: when the bio-only composite (BPM +
+    // GSR + low-variability, emotion excluded) is this high, a calm face may
+    // not veto Deadly — extreme physiology wins.
+    private const double BioOnlyExtreme = 90;
+
+    // Windowed-emotion escalation: average the emotion stress score (fear /
+    // angry ×1.0, surprise ×2.0 — see EmotionStressWeight) over the recent
+    // window and let it top up Stressed-level sensors across the Deadly line:
+    //   bioScore + WeightEmotion × windowAvg ≥ StressedCeiling → Deadly.
+    // The closer the sensors already are to Deadly, the less sustained emotion
+    // is needed. A minimum sample count keeps single-frame noise from counting.
+    private static readonly TimeSpan EmotionWindow = TimeSpan.FromSeconds(30);
+    private const int EmotionWindowMinSamples = 5;
 
     // Multimodal fusion weights (BPM + GSR + low-variability + emotion).
     // When no fresh emotion is available, the emotion weight is dropped and the
@@ -40,14 +64,19 @@ public class TensionAnalyzer
 
     private const int RelaxedCeiling = 30;
     private const int FocusedCeiling = 65;
+    private const int StressedCeiling = 85;
 
     private readonly LinkedList<BioSignal> _window = new();
+    private readonly LinkedList<(DateTimeOffset At, int Stress)> _emotionHistory = new();
     private readonly object _lock = new();
     private BioSignal? _latestBio;
     private EmotionReading? _latestEmotion;
+    private TensionState _lastState = TensionState.Calibrating;
 
-    /// <summary>Fuse a new biosignal sample with the latest known emotion.</summary>
-    public TensionReading UpdateBio(BioSignal sample)
+    /// <summary>Fuse a new biosignal sample with the latest known emotion.
+    /// <paramref name="deadlyEntry"/> is non-null only when this update moved
+    /// the state INTO Deadly, so the caller can persist the moment.</summary>
+    public TensionReading UpdateBio(BioSignal sample, out DeadlyEvent? deadlyEntry)
     {
         lock (_lock)
         {
@@ -58,7 +87,9 @@ public class TensionAnalyzer
                 _window.RemoveFirst();
             }
 
-            return Compute(sample.ReceivedAt);
+            var reading = Compute(sample.ReceivedAt);
+            deadlyEntry = TrackTransition(reading);
+            return reading;
         }
     }
 
@@ -72,14 +103,72 @@ public class TensionAnalyzer
         }
     }
 
-    /// <summary>Fuse a new emotion reading with the latest known biosignal.</summary>
-    public TensionReading UpdateEmotion(EmotionReading emotion)
+    /// <summary>Fuse a new emotion reading with the latest known biosignal.
+    /// <paramref name="deadlyEntry"/> is non-null only when this update moved
+    /// the state INTO Deadly, so the caller can persist the moment.</summary>
+    public TensionReading UpdateEmotion(EmotionReading emotion, out DeadlyEvent? deadlyEntry)
     {
         lock (_lock)
         {
             _latestEmotion = emotion;
-            return Compute(emotion.ReceivedAt);
+
+            _emotionHistory.AddLast((emotion.ReceivedAt, EmotionStress(emotion.Scores)));
+            while (_emotionHistory.Count > 0
+                && emotion.ReceivedAt - _emotionHistory.First!.Value.At > EmotionWindow)
+            {
+                _emotionHistory.RemoveFirst();
+            }
+
+            var reading = Compute(emotion.ReceivedAt);
+            deadlyEntry = TrackTransition(reading);
+            return reading;
         }
+    }
+
+    // Average emotion stress score over the readings inside EmotionWindow.
+    // Returns 0 when there are too few samples — 0 can never push the
+    // escalation sum over the line, so noise or a cold start stays inert.
+    private double WindowedEmotionStress(DateTimeOffset now)
+    {
+        int total = 0;
+        double sum = 0;
+        foreach (var (at, stress) in _emotionHistory)
+        {
+            if (now - at > EmotionWindow)
+            {
+                continue;
+            }
+            total++;
+            sum += stress;
+        }
+        return total >= EmotionWindowMinSamples ? sum / total : 0;
+    }
+
+    // State transitions are tracked only from data updates (UpdateBio/UpdateEmotion),
+    // never from read-only Latest() calls, so an idle /status query can't swallow
+    // or duplicate a Deadly entry. Returns a persistable snapshot on entry.
+    // Must be called while holding _lock.
+    private DeadlyEvent? TrackTransition(TensionReading reading)
+    {
+        var previous = _lastState;
+        _lastState = reading.State;
+        if (reading.State != TensionState.Deadly || previous == TensionState.Deadly)
+        {
+            return null;
+        }
+
+        return new DeadlyEvent
+        {
+            OccurredAt = reading.GeneratedAt,
+            Score = reading.Score,
+            BpmScore = reading.BpmScore,
+            GsrScore = reading.GsrScore,
+            LowVariabilityScore = reading.LowVariabilityScore,
+            EmotionScore = reading.EmotionScore,
+            DominantEmotion = reading.DominantEmotion,
+            Bpm = _latestBio?.Bpm ?? 0,
+            Gsr = _latestBio?.Gsr ?? 0,
+        };
     }
 
     private TensionReading Compute(DateTimeOffset at)
@@ -104,7 +193,10 @@ public class TensionAnalyzer
         int baselineCount = Math.Max(1, _window.Count / 2);
         double gsrBaseline = _window.Take(baselineCount).Average(x => x.Gsr);
         double gsrDelta = gsrBaseline > 0 ? (sample.Gsr - gsrBaseline) / gsrBaseline : 0;
-        int gsrScore = MapScore(gsrDelta, GsrDeltaMin, GsrDeltaMax);
+        // Surge (delta) OR sustained arousal (absolute level), whichever is louder.
+        int gsrScore = Math.Max(
+            MapScore(gsrDelta, GsrDeltaMin, GsrDeltaMax),
+            MapScore(sample.Gsr, GsrAbsLow, GsrAbsHigh));
 
         var recent = _window.TakeLast(VariabilityWindow).Select(x => (double)x.Bpm).ToArray();
         double mean = recent.Average();
@@ -122,11 +214,28 @@ public class TensionAnalyzer
              lowVariabilityScore * WeightLowVariability +
              emotionScore * wEmotion) / weightSum);
 
+        // Escalation overrides — cases where the weighted average would let a
+        // calm face (or a missing one) mask real danger. Each raises the
+        // composite itself (not just the state) so the dashboard gauge agrees.
+        double bioComposite =
+            (bpmScore * WeightBpm + gsrScore * WeightGsr + lowVariabilityScore * WeightLowVariability)
+            / (WeightBpm + WeightGsr + WeightLowVariability);
+        bool extremeBpm = sample.Bpm >= BpmExtreme;
+        bool extremeBio = bioComposite >= BioOnlyExtreme;
+        bool sustainedEmotion = bioComposite >= FocusedCeiling
+            && bioComposite + WeightEmotion * WindowedEmotionStress(DateTimeOffset.UtcNow)
+               >= StressedCeiling;
+        if (extremeBpm || extremeBio || sustainedEmotion)
+        {
+            composite = Math.Max(composite, StressedCeiling);
+        }
+
         TensionState state = composite switch
         {
             < RelaxedCeiling => TensionState.Relaxed,
             < FocusedCeiling => TensionState.Focused,
-            _ => TensionState.Stressed,
+            < StressedCeiling => TensionState.Stressed,
+            _ => TensionState.Deadly,
         };
 
         return new TensionReading(
