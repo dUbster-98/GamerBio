@@ -2,7 +2,7 @@
     display: flex;
     flex-direction: column;
     gap: 1.6rem;
-    max-width: 980px;
+    max-width: 1180px;
     animation: dl-in 0.5s ease both;
 }
 @keyframes dl-in {
@@ -31,6 +31,40 @@
     border-radius: 8px;
 }
 
+/* ---- date filter chips --------------------------------------- */
+.dl-dates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.dl-date {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    padding: 0.45rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.dl-date:hover { background: rgba(120, 145, 180, 0.1); }
+.dl-date.active {
+    background: rgba(255, 90, 110, 0.14);
+    border-color: var(--st-deadly);
+}
+.dl-date-day { font-size: 0.9rem; font-weight: 600; }
+.dl-date-full {
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+}
+.dl-date.active .dl-date-day { color: var(--st-deadly); }
+
 /* ---- empty state --------------------------------------------- */
 .dl-empty {
     padding: 2.2rem 1.4rem;
@@ -47,27 +81,33 @@
 }
 .row {
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 1.2rem;
+    flex-direction: column;
+    gap: 0.7rem;
     padding: 1rem 1.3rem;
     border-left: 3px solid var(--st-deadly);
 }
 
+/* top line: score on the left, raw vitals pinned to the right */
+.row-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.2rem;
+}
+
 .row-score {
-    min-width: 96px;
     color: var(--st-deadly);
     white-space: nowrap;
 }
-.row-score strong { font-size: 1.9rem; font-weight: 700; }
-.row-score small  { color: var(--muted); margin-left: 2px; }
+.row-score strong { font-size: 1.6rem; font-weight: 700; }
+.row-score small  { color: var(--muted); margin-left: 3px; }
 
-.row-main { flex: 1; min-width: 260px; }
+.row-main { width: 100%; }
 .row-time {
     font-size: 0.82rem;
     color: var(--muted);
     letter-spacing: 0.08em;
-    margin-bottom: 0.5rem;
+    margin-top: 0rem;
 }
 
 /* fusion factor mini-meters */
@@ -99,19 +139,20 @@
 }
 .f-val { width: 26px; text-align: right; color: var(--muted); }
 
-/* raw vitals at the moment of entry */
+/* raw vitals at the moment of entry — top-right of the row, beside the score */
 .row-vitals {
     display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    font-size: 0.8rem;
-    text-align: right;
+    flex-direction: row;
+    align-items: center;
+    gap: 1.5rem;
+    font-size: 0.95rem;
     white-space: nowrap;
+    margin-top: 0.6rem;
 }
 .v-bpm { color: var(--heart); }
 .v-gsr { color: var(--gsr); }
 .v-emo { color: var(--st-deadly); text-transform: uppercase; letter-spacing: 0.12em; }
 
 @media (max-width: 640px) {
-    .row-vitals { flex-direction: row; gap: 0.9rem; text-align: left; }
+    .row-vitals { gap: 0.9rem; }
 }

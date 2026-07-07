@@ -418,4 +418,5 @@ FodyWeavers.xsd
 
 # Gallery uploads (stored on disk, not in git)
 gallery-store/
+news-store/
 GamerBio/gallery-store/

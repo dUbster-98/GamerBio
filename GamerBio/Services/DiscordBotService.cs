@@ -8,7 +8,7 @@ namespace GamerBio.Services;
 /// <summary>
 /// Runs the Discord bot inside the same ASP.NET host as a hosted service, so it
 /// shares the <see cref="TensionAnalyzer"/> singleton with the web/SignalR side.
-/// Handles two flows: slash commands (BioCommands) and outbound stress alerts.
+/// Handles two flows: slash commands and outbound stress alerts.
 /// </summary>
 public class DiscordBotService : BackgroundService
 {
@@ -55,7 +55,7 @@ public class DiscordBotService : BackgroundService
             return;
         }
 
-        // Discover slash-command modules (BioCommands) in this assembly.
+        // Discover slash-command modules in this assembly.
         await _interactions.AddModulesAsync(typeof(DiscordBotService).Assembly, _services);
 
         _client.Ready += async () =>

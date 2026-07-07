@@ -1,5 +1,6 @@
 @page "/event"
 @rendermode InteractiveServer
+@using System.Globalization
 @using GamerBio.Data
 @using GamerBio.Hubs
 @using GamerBio.Models
@@ -18,10 +19,10 @@
             <div class="hud-eyebrow">THREAT Archive</div>
             <h1 class="dl-title">☠️ Event Log</h1>
         </div>
-        <div class="dl-count mono">@_events.Count EVENTS</div>
+        <div class="dl-count mono">@Displayed.Count EVENTS</div>
     </header>
 
-    @if (_events.Count == 0)
+    @if (_all.Count == 0)
     {
         <section class="hud-panel dl-empty mono">
             아직 기록된 이벤트가 없습니다
@@ -29,16 +30,49 @@
     }
     else
     {
+        <!-- ===== Date filter ===== -->
+        <nav class="dl-dates">
+            <button class="dl-date @(_selectedDate is null ? "active" : "")"
+                    @onclick="() => SelectDate(null)">
+                <span class="dl-date-day mono">전체</span>
+                <span class="dl-date-full mono">ALL</span>
+            </button>
+            @foreach (var d in _dates)
+            {
+                <button class="dl-date @(_selectedDate == d ? "active" : "")"
+                        @onclick="() => SelectDate(d)">
+                    <span class="dl-date-day mono">@d.ToString("MM-dd")</span>
+                    <span class="dl-date-full mono">@d.ToString("yyyy · ddd", CultureInfo.InvariantCulture)</span>
+                </button>
+            }
+        </nav>
+
+        @if (Displayed.Count == 0)
+        {
+            <section class="hud-panel dl-empty mono">
+                이 날짜에 기록된 이벤트가 없습니다
+            </section>
+        }
+        else
+        {
         <section class="dl-list">
-            @foreach (var e in _events)
+            @foreach (var e in Displayed)
             {
                 <article class="hud-panel row">
-                    <div class="row-score mono">
-                        <strong>@e.Score</strong><small>/100</small>
+                    <div class="row-top">
+                        <div class="row-score mono">
+                            <strong>@e.Score</strong><small>/100</small>
+                        </div>
+
+                        <div class="row-vitals mono">
+                            <div class="row-time mono">@e.OccurredAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</div>
+                            <span class="v-bpm">♥ @e.Bpm BPM</span>
+                            <span class="v-gsr">GSR @e.Gsr</span>
+                            <span class="v-emo">@(e.DominantEmotion ?? "—")</span>
+                        </div>
                     </div>
 
-                    <div class="row-main">
-                        <div class="row-time mono">@e.OccurredAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</div>
+                    <div class="row-main">                     
                         <div class="row-factors">
                             @foreach (var (label, val) in Factors(e))
                             {
@@ -50,23 +84,30 @@
                             }
                         </div>
                     </div>
-
-                    <div class="row-vitals mono">
-                        <span class="v-bpm">♥ @e.Bpm BPM</span>
-                        <span class="v-gsr">GSR @e.Gsr</span>
-                        <span class="v-emo">@(e.DominantEmotion ?? "—")</span>
-                    </div>
                 </article>
             }
         </section>
+        }
     }
 </div>
 
 @code {
-    private const int MaxRows = 200;
+    private const int MaxRows = 500;
 
-    private readonly List<DeadlyEvent> _events = new();
+    // All loaded events (newest first). Deadly entries are rare, so we hold the
+    // full set client-side and filter by date in memory rather than re-querying.
+    private readonly List<DeadlyEvent> _all = new();
+    private DateOnly? _selectedDate;   // null = show everything
     private HubConnection? _connection;
+
+    // Distinct local dates that have events, newest first (for the filter chips).
+    private IReadOnlyList<DateOnly> _dates = Array.Empty<DateOnly>();
+
+    // Events matching the current date filter (or all when no date is selected).
+    private List<DeadlyEvent> Displayed =>
+        _selectedDate is DateOnly d
+            ? _all.Where(e => LocalDate(e) == d).ToList()
+            : _all;
 
     protected override async Task OnInitializedAsync()
     {
@@ -80,9 +121,10 @@
 
         _connection.On<DeadlyEvent>(BioSignalHub.DeadlyEventRecorded, async e =>
         {
-            if (_events.All(x => x.Id != e.Id))
+            if (_all.All(x => x.Id != e.Id))
             {
-                _events.Insert(0, e);
+                _all.Insert(0, e);
+                RebuildDates();
                 await InvokeAsync(StateHasChanged);
             }
         });
@@ -98,9 +140,23 @@
             .OrderByDescending(x => x.OccurredAt)
             .Take(MaxRows)
             .ToListAsync();
-        _events.Clear();
-        _events.AddRange(items);
+        _all.Clear();
+        _all.AddRange(items);
+        RebuildDates();
     }
+
+    private void SelectDate(DateOnly? date) => _selectedDate = date;
+
+    private void RebuildDates() =>
+        _dates = _all
+            .Select(LocalDate)
+            .Distinct()
+            .OrderDescending()
+            .ToList();
+
+    // Group by the same local date shown on each row (OccurredAt is stored UTC).
+    private static DateOnly LocalDate(DeadlyEvent e) =>
+        DateOnly.FromDateTime(e.OccurredAt.LocalDateTime);
 
     private static IEnumerable<(string Label, int Value)> Factors(DeadlyEvent e)
     {

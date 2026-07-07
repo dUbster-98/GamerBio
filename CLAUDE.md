@@ -42,6 +42,7 @@
 | 감정 DB 영속화 (`Emotion` 엔티티) | ⏳ 미착수 (현재 메모리상 최신값만 융합) |
 | Discord 봇 (`DiscordBotService`) — 알림 + 슬래시 명령 | ✅ 호스팅 서비스로 통합, `/status`·`/bpm` + Stressed/**Deadly** 진입 알림 (로컬 빌드 검증) |
 | **Deadly 단계 + 이벤트 로그** (`deadly_events` 테이블, `/event` 페이지) | ✅ 진입 시각+파라미터 DB 저장, 실시간 페이지 갱신 (로컬 검증) |
+| Blazor `/news` 뉴스 열람 (날짜별 아카이브) | ✅ RPi 스케줄러가 저녁마다 저장한 `yyyy-MM-dd.html`을 날짜 목록 + iframe으로 열람 (로컬 검증) |
 | PC 시선·졸음(MediaPipe) / MQTT | ⏳ 미착수 |
 
 **DeepFace 감정 분석 앱 최적화:**
@@ -76,7 +77,7 @@
 
 **Deadly 단계 + 이벤트 로그 (2026-07-06):**
 - `TensionState`에 **Deadly** 추가: `<30 Relaxed / <65 Focused / <85 Stressed / ≥85 Deadly` (`StressedCeiling=85`). 대시보드·홈 범례·Discord 알림(☠️ 전용 메시지) 반영
-- **Deadly 진입 이벤트 DB 영속화**: `DeadlyEvent` 엔티티 → `deadly_events` 테이블(마이그레이션 `AddDeadlyEvents`). 진입 시각 + 융합 점수 + 요소별 점수 + 당시 원시 바이탈(BPM/GSR) 저장. `TensionAnalyzer`가 상태 전환을 락 안에서 추적해 **진입 순간에만 1건** 기록 (`UpdateBio`/`UpdateEmotion`의 out 파라미터, 읽기 전용 `Latest()`는 관여 안 함). `GET /api/deadly/recent` 조회 지원
+- **Deadly 이벤트 DB 영속화**: `DeadlyEvent` 엔티티 → `deadly_events` 테이블(마이그레이션 `AddDeadlyEvents`). 발생 시각 + 융합 점수 + 요소별 점수 + 당시 원시 바이탈(BPM/GSR) 저장. `TensionAnalyzer`가 상태를 락 안에서 추적해 **Deadly 진입 시 즉시 1건 + 지속되는 동안 `DeadlyRepeatInterval`(기본 5초)마다 계속** 기록 (`UpdateBio`/`UpdateEmotion`의 out 파라미터, 읽기 전용 `Latest()`는 관여 안 함). 고빈도 샘플 폭주를 막기 위해 진입 외에는 인터벌로 스로틀. `GET /api/deadly/recent` 조회 지원
 - Blazor `/event` **Event Log 페이지**: 이벤트 행(점수·시각·요소 미터·바이탈) 목록 + SignalR `DeadlyEventRecorded`로 실시간 prepend. `TensionReading`(SignalR 와이어 포맷)과 `DeadlyEvent`(EF 엔티티)는 의도적으로 분리 — 와이어/스키마 독립 진화
 - **융합 로직 개선** (지속 고텐션이 Focused에 갇히던 문제 수정):
   - GSR 점수 = max(변화율, **절대 수준**) — 지속 각성이 baseline에 흡수돼 0점 되던 문제 해결 (`GsrAbsLow=300`~`GsrAbsHigh=800`, 실센서 단위 확정 시 조정)
@@ -93,6 +94,7 @@
   - `Camera:StreamUrl` = `/cam` (브라우저 노출용 동일 출처 경로)
   - `Camera:UpstreamUrl` = `http://<PC-LAN-IP>:8080/` (RPi5 내부 전용, 외부 비노출)
   - `Gallery:StoragePath` = 사진 저장 경로. **배포 폴더(`/opt/biomonitor`) 밖**으로 지정해야 `scp` 재배포 시 사진이 보존됨 (예: `/home/tjdgus/gallery-store`). 미설정 시 `ContentRoot/gallery-store` 기본값
+  - `News:StoragePath` = 저녁 스케줄러가 `yyyy-MM-dd.html` 뉴스 파일을 저장하는 폴더 (`/home/tjdgus/news-store`). 웹 `/news`가 이 폴더를 읽어 날짜별로 열람. 배포 폴더 밖이므로 재배포와 무관. 미설정 시 `ContentRoot/news-store` 기본값
 
 ---
 

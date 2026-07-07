@@ -1,0 +1,140 @@
+.news {
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+    max-width: 1280px;
+    animation: nw-in 0.5s ease both;
+}
+@keyframes nw-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ---- header -------------------------------------------------- */
+.nw-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.nw-title {
+    margin: 0.3rem 0 0;
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    font-weight: 800;
+}
+.nw-count {
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+/* ---- empty state --------------------------------------------- */
+.nw-empty {
+    padding: 2.2rem 1.4rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+/* ---- layout: date rail + viewer ------------------------------ */
+.nw-body {
+    display: grid;
+    grid-template-columns: 210px 1fr;
+    gap: 1.1rem;
+    align-items: stretch;
+    min-height: 78vh;
+}
+
+/* ---- date picker --------------------------------------------- */
+.nw-dates {
+    padding: 1rem 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    max-height: 78vh;
+    overflow-y: auto;
+}
+.nw-dates-label { padding: 0 0.4rem; }
+.nw-date-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.nw-date {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.nw-date:hover { background: rgba(120, 145, 180, 0.1); }
+.nw-date.active {
+    background: rgba(120, 145, 180, 0.16);
+    border-color: var(--line);
+}
+.nw-date-day { font-size: 0.95rem; font-weight: 600; }
+.nw-date-full {
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+}
+.nw-date.active .nw-date-day { color: var(--accent, #7fd1ff); }
+
+/* ---- article viewer ------------------------------------------ */
+.nw-viewer {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.nw-viewer-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.8rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+}
+.nw-open {
+    color: var(--accent, #7fd1ff);
+    text-decoration: none;
+    font-size: 0.78rem;
+}
+.nw-open:hover { text-decoration: underline; }
+.nw-frame {
+    flex: 1;
+    width: 100%;
+    min-height: 68vh;
+    border: 0;
+    background: #fff;
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+
+@media (max-width: 760px) {
+    .nw-body {
+        grid-template-columns: 1fr;
+    }
+    .nw-dates {
+        max-height: none;
+        flex-direction: row;
+        overflow-x: auto;
+    }
+    .nw-date-list {
+        flex-direction: row;
+        flex: 1;
+    }
+    .nw-date { min-width: 96px; }
+}

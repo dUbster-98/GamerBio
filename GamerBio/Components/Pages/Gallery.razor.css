@@ -2,7 +2,7 @@
     display: flex;
     flex-direction: column;
     gap: 1.6rem;
-    max-width: 1180px;
+    max-width: 1280px;
     animation: gal-in 0.5s ease both;
 }
 @keyframes gal-in {

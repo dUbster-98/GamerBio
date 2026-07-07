@@ -16,6 +16,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<TensionAnalyzer>();
 builder.Services.AddSingleton<GalleryStorage>();
+builder.Services.AddSingleton<NewsStorage>();
 builder.Services.AddSingleton<RandomPhotoStore>();
 
 // Discord bot runs as a hosted service in this same host so it can share the
@@ -154,6 +155,18 @@ app.MapGet("/gallery/media/{id:long}", async (
     }
 
     return Results.File(path, photo.ContentType, enableRangeProcessing: true);
+});
+
+// Serve a day's news HTML (produced by the RPi's evening scheduler) by date.
+// Files live on disk outside wwwroot; NewsStorage validates the date so only a
+// well-formed yyyy-MM-dd resolves to a file (no path traversal). The /news page
+// embeds this in a sandboxed iframe so the article keeps its own styling.
+app.MapGet("/news/media/{date}", (string date, NewsStorage storage) =>
+{
+    var path = storage.PathFor(date);
+    return path is null
+        ? Results.NotFound()
+        : Results.File(path, "text/html; charset=utf-8");
 });
 
 var api = app.MapGroup("/api");

@@ -1,4 +1,6 @@
+using System.Globalization;
 using Discord.Interactions;
+using Microsoft.Extensions.Configuration;
 
 namespace GamerBio.Services;
 
@@ -7,15 +9,25 @@ namespace GamerBio.Services;
 /// Discord.Net's DI, so the singleton <see cref="TensionAnalyzer"/> is injected
 /// straight in and we read its latest fused state on demand.
 /// </summary>
-public class BioCommands : InteractionModuleBase<SocketInteractionContext>
+public class DiscordCommands : InteractionModuleBase<SocketInteractionContext>
 {
+    // Public site base used to link the news page (defaults to the fixed public
+    // domain; override with News:PublicBaseUrl for other deployments).
+    private const string DefaultPublicBaseUrl = "https://bio-monitor.uk";
+
     private readonly TensionAnalyzer _analyzer;
     private readonly RandomPhotoStore _photos;
+    private readonly NewsStorage _news;
+    private readonly string _publicBaseUrl;
 
-    public BioCommands(TensionAnalyzer analyzer, RandomPhotoStore photos)
+    public DiscordCommands(TensionAnalyzer analyzer, RandomPhotoStore photos, NewsStorage news, IConfiguration config)
     {
         _analyzer = analyzer;
         _photos = photos;
+        _news = news;
+        var configured = config["News:PublicBaseUrl"];
+        _publicBaseUrl = (string.IsNullOrWhiteSpace(configured) ? DefaultPublicBaseUrl : configured)
+            .TrimEnd('/');
     }
 
     [SlashCommand("status", "현재 게이머 텐션 상태를 보여줍니다")]
@@ -46,5 +58,23 @@ public class BioCommands : InteractionModuleBase<SocketInteractionContext>
         }
 
         await RespondWithFileAsync(path, text: $"🎲 오늘의 랜덤 사진: **{Path.GetFileName(path)}**");
+    }
+
+    [SlashCommand("뉴스", "오늘의 뉴스를 보여줍니다")]
+    public async Task News()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+
+        var latest = _news.AvailableDates().FirstOrDefault();
+        if (latest == default)
+        {
+            await RespondAsync("📭 아직 저장된 뉴스가 없습니다.");
+            return;
+        }
+
+        var dateStr = latest.ToString(NewsStorage.DateFormat, CultureInfo.InvariantCulture);
+        var header = $"📰 **오늘의 뉴스** · {dateStr}";
+
+        await RespondAsync($"{header}\n{_publicBaseUrl}/news");
     }
 }

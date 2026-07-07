@@ -49,7 +49,7 @@ public class TensionAnalyzer
 
     // Emotion is only fused if it arrived recently; otherwise it's stale (PC
     // paused / disconnected) and we fall back to biosignal-only scoring.
-    private static readonly TimeSpan EmotionFreshness = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan EmotionFreshness = TimeSpan.FromSeconds(5);
 
     // How much each emotion pushes the "stress" axis (0-100). angry/fear are the
     // strongest stress signals; happy/neutral keep it low (see CLAUDE.md logic).
@@ -66,16 +66,23 @@ public class TensionAnalyzer
     private const int FocusedCeiling = 65;
     private const int StressedCeiling = 85;
 
+    // While the state stays Deadly we keep logging at this cadence — not just
+    // once on entry — so a sustained Deadly episode leaves a continuous trail.
+    // Entry is always logged immediately regardless of this interval.
+    private static readonly TimeSpan DeadlyRepeatInterval = TimeSpan.FromSeconds(5);
+
     private readonly LinkedList<BioSignal> _window = new();
     private readonly LinkedList<(DateTimeOffset At, int Stress)> _emotionHistory = new();
     private readonly object _lock = new();
     private BioSignal? _latestBio;
     private EmotionReading? _latestEmotion;
     private TensionState _lastState = TensionState.Calibrating;
+    private DateTimeOffset _lastDeadlyRecordAt = DateTimeOffset.MinValue;
 
     /// <summary>Fuse a new biosignal sample with the latest known emotion.
-    /// <paramref name="deadlyEntry"/> is non-null only when this update moved
-    /// the state INTO Deadly, so the caller can persist the moment.</summary>
+    /// <paramref name="deadlyEntry"/> is non-null on entry into Deadly and again
+    /// at each <see cref="DeadlyRepeatInterval"/> tick while it persists, so the
+    /// caller can persist the ongoing episode.</summary>
     public TensionReading UpdateBio(BioSignal sample, out DeadlyEvent? deadlyEntry)
     {
         lock (_lock)
@@ -104,8 +111,9 @@ public class TensionAnalyzer
     }
 
     /// <summary>Fuse a new emotion reading with the latest known biosignal.
-    /// <paramref name="deadlyEntry"/> is non-null only when this update moved
-    /// the state INTO Deadly, so the caller can persist the moment.</summary>
+    /// <paramref name="deadlyEntry"/> is non-null on entry into Deadly and again
+    /// at each <see cref="DeadlyRepeatInterval"/> tick while it persists, so the
+    /// caller can persist the ongoing episode.</summary>
     public TensionReading UpdateEmotion(EmotionReading emotion, out DeadlyEvent? deadlyEntry)
     {
         lock (_lock)
@@ -144,18 +152,28 @@ public class TensionAnalyzer
         return total >= EmotionWindowMinSamples ? sum / total : 0;
     }
 
-    // State transitions are tracked only from data updates (UpdateBio/UpdateEmotion),
+    // Deadly logging is driven only from data updates (UpdateBio/UpdateEmotion),
     // never from read-only Latest() calls, so an idle /status query can't swallow
-    // or duplicate a Deadly entry. Returns a persistable snapshot on entry.
+    // or duplicate a record. Returns a persistable snapshot on entry into Deadly
+    // and then once per DeadlyRepeatInterval for as long as it persists.
     // Must be called while holding _lock.
     private DeadlyEvent? TrackTransition(TensionReading reading)
     {
         var previous = _lastState;
         _lastState = reading.State;
-        if (reading.State != TensionState.Deadly || previous == TensionState.Deadly)
+        if (reading.State != TensionState.Deadly)
         {
             return null;
         }
+
+        // Log entry immediately; while it stays Deadly, throttle to the interval
+        // so high-frequency samples don't flood the log.
+        bool entering = previous != TensionState.Deadly;
+        if (!entering && reading.GeneratedAt - _lastDeadlyRecordAt < DeadlyRepeatInterval)
+        {
+            return null;
+        }
+        _lastDeadlyRecordAt = reading.GeneratedAt;
 
         return new DeadlyEvent
         {

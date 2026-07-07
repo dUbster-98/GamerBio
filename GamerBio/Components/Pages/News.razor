@@ -1,0 +1,73 @@
+@page "/news"
+@rendermode InteractiveServer
+@using System.Globalization
+@using GamerBio.Services
+@inject NewsStorage Storage
+
+<PageTitle>News · GamerBio</PageTitle>
+
+<div class="news">
+
+    <header class="nw-head">
+        <div>
+            <div class="hud-eyebrow">Daily Digest</div>
+            <h1 class="nw-title">📰 News</h1>
+        </div>
+        <div class="nw-count mono">@_dates.Count DAYS</div>
+    </header>
+
+    @if (_dates.Count == 0)
+    {
+        <section class="hud-panel nw-empty mono">
+            아직 저장된 뉴스가 없습니다 · 저녁 스케줄러가 실행되면 날짜별로 표시됩니다
+        </section>
+    }
+    else
+    {
+        <div class="nw-body">
+            <!-- ===== Date picker ===== -->
+            <aside class="hud-panel nw-dates">
+                <div class="hud-eyebrow nw-dates-label">Archive</div>
+                <nav class="nw-date-list">
+                    @foreach (var d in _dates)
+                    {
+                        var key = d.ToString(NewsStorage.DateFormat, CultureInfo.InvariantCulture);
+                        <button class="nw-date @(_selected == d ? "active" : "")"
+                                @onclick="() => Select(d)">
+                            <span class="nw-date-day mono">@d.ToString("MM-dd")</span>
+                            <span class="nw-date-full mono">@d.ToString("yyyy · ddd", CultureInfo.InvariantCulture)</span>
+                        </button>
+                    }
+                </nav>
+            </aside>
+
+            <!-- ===== Article viewer ===== -->
+            <section class="hud-panel nw-viewer">
+                @if (_selected is DateOnly sel)
+                {
+                    var selKey = sel.ToString(NewsStorage.DateFormat, CultureInfo.InvariantCulture);
+                    <div class="nw-viewer-bar mono">
+                        <span>@selKey</span>
+                        <a class="nw-open" href="/news/media/@selKey" target="_blank" rel="noopener">새 탭 ↗</a>
+                    </div>
+                    <iframe class="nw-frame" src="/news/media/@selKey"
+                            sandbox="allow-same-origin allow-popups"
+                            title="News @selKey"></iframe>
+                }
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    private List<DateOnly> _dates = new();
+    private DateOnly? _selected;
+
+    protected override void OnInitialized()
+    {
+        _dates = Storage.AvailableDates().ToList();
+        _selected = _dates.Count > 0 ? _dates[0] : null;
+    }
+
+    private void Select(DateOnly date) => _selected = date;
+}
