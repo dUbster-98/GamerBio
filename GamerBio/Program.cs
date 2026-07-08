@@ -1,3 +1,4 @@
+using System.Globalization;
 using GamerBio.Components;
 using GamerBio.Data;
 using GamerBio.Hubs;
@@ -234,6 +235,61 @@ api.MapGet("/deadly/recent", async (BioMonitorContext db, int take = 20) =>
         .Take(Math.Clamp(take, 1, 200))
         .ToListAsync();
     return Results.Ok(items);
+});
+
+// Receive the day's news file (an uploaded news.html) from the news-producing
+// session and file it on disk (outside wwwroot), renamed to today's date as
+// yyyy-MM-dd.html — which the /news page then lists and serves via
+// /news/media/{date}. Accepts multipart/form-data with a single html file, or a
+// raw html body as a fallback. Optional ?date= overrides today; an existing file
+// for that date is overwritten.
+api.MapPost("/news", async (
+    HttpRequest req,
+    NewsStorage storage,
+    string? date,
+    ILogger<Program> logger) =>
+{
+    var ct = req.HttpContext.RequestAborted;
+    byte[] bytes;
+
+    if (req.HasFormContentType && req.Form.Files.Count > 0)
+    {
+        // Uploaded as a file (e.g. news.html) — take the first file field.
+        var file = req.Form.Files[0];
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms, ct);
+        bytes = ms.ToArray();
+    }
+    else
+    {
+        // Fallback: raw html body.
+        using var ms = new MemoryStream();
+        await req.Body.CopyToAsync(ms, ct);
+        bytes = ms.ToArray();
+    }
+
+    if (bytes.Length == 0)
+    {
+        return Results.BadRequest("empty news body");
+    }
+    if (bytes.Length > NewsStorage.MaxFileBytes)
+    {
+        return Results.BadRequest("news too large");
+    }
+
+    // The incoming file is named news.html; we rename it to the date on save.
+    var day = string.IsNullOrWhiteSpace(date)
+        ? DateTime.Now.ToString(NewsStorage.DateFormat, CultureInfo.InvariantCulture)
+        : date;
+
+    var key = await storage.SaveHtmlAsync(day, bytes, ct);
+    if (key is null)
+    {
+        return Results.BadRequest($"invalid date '{day}' — expected {NewsStorage.DateFormat}");
+    }
+
+    logger.LogInformation("News received for {Date} ({Bytes} bytes)", key, bytes.Length);
+    return Results.Ok(new { date = key, bytes = bytes.Length });
 });
 
 // Receive an already-captured frame from the PC (the exact frame DeepFace

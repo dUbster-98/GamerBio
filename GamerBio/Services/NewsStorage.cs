@@ -14,6 +14,9 @@ public class NewsStorage
 {
     public const string DateFormat = "yyyy-MM-dd";
 
+    // A day's news article is HTML text — generous cap to reject junk/oversized bodies.
+    public const long MaxFileBytes = 10 * 1024 * 1024; // 10 MB per day
+
     private readonly string _root;
     private readonly ILogger<NewsStorage> _logger;
 
@@ -69,5 +72,26 @@ public class NewsStorage
         var fileName = parsed.ToString(DateFormat, CultureInfo.InvariantCulture) + ".html";
         var path = Path.Combine(_root, fileName);
         return File.Exists(path) ? path : null;
+    }
+
+    /// <summary>
+    /// Writes a day's news HTML to disk, overwriting any existing file for that
+    /// date. The date is re-formatted from the parsed value (never the raw
+    /// string) so traversal characters can't reach the path. Returns the
+    /// canonical <c>yyyy-MM-dd</c> key, or null if the date is malformed.
+    /// </summary>
+    public async Task<string?> SaveHtmlAsync(string date, byte[] html, CancellationToken ct)
+    {
+        if (!DateOnly.TryParseExact(date, DateFormat, CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var parsed))
+        {
+            return null;
+        }
+
+        var key = parsed.ToString(DateFormat, CultureInfo.InvariantCulture);
+        var path = Path.Combine(_root, key + ".html");
+        await File.WriteAllBytesAsync(path, html, ct);
+        _logger.LogInformation("News saved for {Date} ({Bytes} bytes)", key, html.Length);
+        return key;
     }
 }
