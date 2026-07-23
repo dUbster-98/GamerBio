@@ -38,7 +38,7 @@
 | Blazor `/gallery` 갤러리 (사진 업로드/조회/삭제) | ✅ `InputFile` 업로드 + 그리드, RPi 디스크 저장 (메타데이터는 DB) |
 | `POST /api/gallery/capture` + surprise 자동 캡처 | ✅ PC가 **분석한 그 프레임**을 전송 → 갤러리 저장 + 실시간 갱신 |
 | 공개 도메인 `https://bio-monitor.uk` (Cloudflare Tunnel) | ✅ 대시보드 + 캠 영상 외부 접속 확인 |
-| ESP32 펌웨어 | ⏳ 부품 대기 중 (더미 데이터로 검증 중) |
+| ESP32 펌웨어 | 🔜 센서 3종(GSR/MAX30102/DHT22) 수령, 값 읽기 데모 작성 (`esp32/main/hello_world_main.c`, ESP-IDF v6 / ESP32-S3). DHT는 라벨과 달리 실제 DHT22(AM2302) 포맷 → 16비트 디코딩으로 검증(28.0°C/43.4%RH). WiFi POST·BPM 계산은 미착수 |
 | 감정 DB 영속화 (`Emotion` 엔티티) | ⏳ 미착수 (현재 메모리상 최신값만 융합) |
 | Discord 봇 (`DiscordBotService`) — 알림 + 슬래시 명령 | ✅ 호스팅 서비스로 통합, `/status`·`/bpm` + Stressed/**Deadly** 진입 알림 (로컬 빌드 검증) |
 | **Deadly 단계 + 이벤트 로그** (`deadly_events` 테이블, `/event` 페이지) | ✅ 진입 시각+파라미터 DB 저장, 실시간 페이지 갱신 (로컬 검증) |
@@ -104,7 +104,7 @@
 [ESP32-S3 - FreeRTOS]
   └─ MAX30102 심박센서 (I2C)
   └─ Grove GSR 피부전도도 센서 (Analog)
-  └─ DS18B20 피부온도 센서 (1-Wire) [선택]
+  └─ DHT22 (AM2302) 온습도 센서 (단선 디지털) [선택]
   └─ WiFi HTTP POST → MQTT (리팩토링 예정)
         ↓ WiFi (로컬 or Tailscale VPN)
 [데스크탑 PC]
@@ -173,7 +173,7 @@
 | **ESP32-S3 DevKit** | 메인 MCU | - | ₩8,000~12,000 |
 | **MAX30102** | 심박수 + HRV | I2C | ₩3,000~5,000 |
 | **Grove GSR 센서** | 피부전도도 (스트레스) | Analog | ₩8,000~15,000 |
-| **DS18B20** | 피부온도 (선택) | 1-Wire | ₩2,000~3,000 |
+| **DHT22 (AM2302)** | 온습도 (선택) | 단선 디지털 | ₩2,000~5,000 |
 | **LiPo 3.7V 1000mAh** | 웨어러블 배터리 | - | ₩5,000~8,000 |
 | **TP4056 모듈** | 배터리 충전 관리 | - | ₩1,000~2,000 |
 | 브레드보드 + 점퍼선 | 프로토타이핑 | - | ₩3,000~5,000 |
@@ -204,7 +204,7 @@
 | 항목 | 내용 |
 |------|------|
 | **RTOS 실설계** | FreeRTOS 멀티태스크 + 저전력 구조 |
-| **HW-SW 인터페이스** | I2C / Analog / 1-Wire 프로토콜 직접 구현 |
+| **HW-SW 인터페이스** | I2C / Analog(ADC) / 단선 디지털(DHT) 프로토콜 직접 구현 |
 | **무선 통신** | WiFi HTTP POST + MQTT 전환 경험 |
 | **컴퓨터 비전** | OpenCV + MediaPipe + DeepFace 실사용 |
 | **분산 처리 설계** | PC(추론) ↔ RPi5(서버) 역할 분리 아키텍처 |

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python *)",
-      "Bash(rm -f _probe.wav _p_*.wav)",
-      "Bash(ls _probe.wav _p_*.wav)"
-    ]
-  }
-}

@@ -50,7 +50,9 @@
       "Bash(sleep 1)",
       "Bash(taskkill //F //IM GamerBio.exe)",
       "PowerShell(dotnet build GamerBio/GamerBio.csproj -v q --nologo && dotnet run --project GamerBio --launch-profile http --no-build &)",
-      "Bash(tasklist //FI \"IMAGENAME eq GamerBio.exe\")"
+      "Bash(tasklist //FI \"IMAGENAME eq GamerBio.exe\")",
+      "Bash(cat CMakeLists.txt)",
+      "Bash(cat main/CMakeLists.txt)"
     ]
   }
 }

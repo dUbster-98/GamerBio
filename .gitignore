@@ -10,6 +10,15 @@
 *.userosscache
 *.sln.docstates
 
+# ESP-IDF
+**/build/
+**/sdkconfig.old
+**/managed_components/
+**/dependencies.lock
+*.pyc
+/i2c_basic
+/http_client
+
 # Environment-specific app settings (contain DB passwords, secrets)
 appsettings.Production.json
 appsettings.*.local.json
