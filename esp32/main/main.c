@@ -13,8 +13,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"          // esp_rom_delay_us
 #include "esp_timer.h"
@@ -23,6 +25,13 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/i2c_master.h"
+#include "nvs_flash.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
 
 static const char *TAG = "sensors";
 
@@ -36,6 +45,18 @@ static const char *TAG = "sensors";
 #define I2C_SCL_GPIO      9
 
 #define DHT_GPIO        5
+
+/* ================= WiFi / API 설정 (배포 전 실제 값으로 교체) ================= */
+#define WIFI_SSID           "YOUR_WIFI_SSID"
+#define WIFI_PASS           "YOUR_WIFI_PASSWORD"
+#define WIFI_MAX_RETRY      5
+
+#define API_URL             "https://bio-monitor.uk/api/biosignal"
+#define API_KEY             "YOUR_API_KEY"      // appsettings의 BioMonitor:ApiKey 와 동일해야 함
+#define API_TIMEOUT_MS      5000
+
+// TODO: MAX30102 raw RED/IR로부터 실제 BPM을 계산하는 로직 추가 전까지 쓰는 임시값.
+#define PLACEHOLDER_BPM     60
 
 /* ================= GSR (ADC) ================= */
 static adc_oneshot_unit_handle_t s_adc = NULL;
@@ -270,6 +291,157 @@ static bool dht_read(int pin, float *temp_c, float *humidity)
     return false;
 }
 
+/* ================= WiFi ================= */
+// wifi_init_sta()를 호출한 태스크(app_main)를 연결 완료/실패까지 블로킹시키기 위한 이벤트 그룹.
+// WiFi 이벤트는 별도의 시스템 이벤트 태스크에서 비동기로 발생하므로, 그 결과를
+// app_main으로 "전달"할 통로가 필요하다 — 그게 이 이벤트 그룹의 역할.
+static EventGroupHandle_t s_wifi_event_group;
+#define WIFI_CONNECTED_BIT BIT0   // IP를 받아 연결이 확정됐을 때 set
+#define WIFI_FAIL_BIT      BIT1   // 재시도를 다 소진하고 포기했을 때 set
+static int s_retry_num = 0;
+
+// esp_event 시스템이 WiFi/IP 이벤트가 발생할 때마다 호출하는 콜백.
+// esp_wifi_start()는 즉시 연결해주지 않고 STA_START 이벤트만 발생시키므로,
+// 실제 연결 시도(esp_wifi_connect)는 여기서 이벤트에 반응해 수행한다.
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                                int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        // 드라이버가 준비 완료됐다는 신호 → 첫 연결 시도
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        // AP를 못 찾음/비번 틀림/신호 끊김 등으로 끊어질 때마다 여기로 온다.
+        // WIFI_MAX_RETRY까지는 자동 재연결을 시도하고, 다 쓰면 포기(FAIL_BIT)한다.
+        if (s_retry_num < WIFI_MAX_RETRY) {
+            esp_wifi_connect();
+            s_retry_num++;
+            ESP_LOGW(TAG, "WiFi 연결 재시도 (%d/%d)", s_retry_num, WIFI_MAX_RETRY);
+        } else {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        // DHCP로 IP를 받은 시점이 곧 "진짜 연결됨"이다 (링크만 붙었다고 통신 가능한 게 아님).
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "WiFi 연결됨, IP=" IPSTR, IP2STR(&event->ip_info.ip));
+        s_retry_num = 0;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+// WiFi STA 모드로 초기화하고 연결(또는 최종 실패)까지 대기한다.
+// 성공 시 true. 실패해도 앱은 계속 동작(센서 값은 시리얼로만 출력됨) — WiFi는 부가 기능이지
+// 센서 읽기의 필수 조건이 아니기 때문.
+static bool wifi_init_sta(void)
+{
+    // ESP-IDF WiFi 스택이 요구하는 표준 초기화 순서:
+    // NVS(설정 저장) → netif(TCP/IP) → 이벤트 루프 → WiFi 드라이버, 순서를 바꾸면 에러 발생.
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
+
+    s_wifi_event_group = xEventGroupCreate();
+    // ESP_EVENT_ANY_ID: WIFI_EVENT 계열은 전부 이 핸들러 하나가 받아서 event_id로 분기
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+
+    wifi_config_t wifi_cfg = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());   // 이 호출 자체는 비동기 — 실제 연결은 위 이벤트 핸들러가 처리
+
+    // 두 비트 중 하나라도 켜질 때까지 여기서 블로킹(성공/실패가 확정되기 전엔 app_main 진행 안 함).
+    // pdFALSE, pdFALSE: 비트를 클리어하지 않고, AND가 아니라 OR로 대기(둘 중 하나만 있어도 깨어남)
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           pdFALSE, pdFALSE, portMAX_DELAY);
+    return (bits & WIFI_CONNECTED_BIT) != 0;
+}
+
+// WiFi 연결 후 SNTP로 실제 시각 동기화.
+// ESP32는 RTC 배터리가 없어 부팅 시 time()이 1970-01-01부터 다시 시작한다.
+// 서버 DTO의 Timestamp(DateTimeOffset)는 필수 필드라 이 동기화 없이는 엉뚱한 옛날 시각이
+// 그대로 DB에 저장되므로, POST 시작 전 반드시 한 번 맞춰준다.
+static void time_sync(void)
+{
+    ESP_LOGI(TAG, "SNTP 시각 동기화 중...");
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&cfg);
+    // 최대 10초 대기. 실패해도 앱은 계속 진행(그 경우 timestamp가 부정확한 채로 전송됨)
+    if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP 동기화 실패, 타임스탬프가 부정확할 수 있음");
+    }
+}
+
+// 현재 UTC 시각을 ISO-8601 문자열(예: 2026-07-29T12:34:56Z)로 buf에 기록.
+// .NET의 DateTimeOffset은 이 포맷(끝의 'Z' = UTC)을 그대로 파싱할 수 있다.
+static void iso8601_now(char *buf, size_t len)
+{
+    time_t now;
+    struct tm tm_utc;
+    time(&now);
+    gmtime_r(&now, &tm_utc);   // 로컬 타임존 개념이 없으므로 항상 UTC로 변환해서 사용
+    strftime(buf, len, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
+
+/* ================= API POST ================= */
+// GamerBio 서버(Program.cs)의 record BioSignalDto(int Bpm, int Gsr, double? SkinTemp,
+// DateTimeOffset Timestamp)와 필드명(대소문자 포함) & 타입을 정확히 맞춰야 모델 바인딩이 성공한다.
+// skin_temp는 DHT 읽기에 실패했을 수도 있으므로(has_skin_temp==false) null 허용 타입으로 보낸다.
+static void post_biosignal(int bpm, int gsr, bool has_skin_temp, double skin_temp)
+{
+    char ts[32];
+    iso8601_now(ts, sizeof(ts));
+
+    // --- 1) JSON 바디 조립 ---
+    // { "bpm": .., "gsr": .., "skinTemp": ..|null, "timestamp": "..." }
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "bpm", bpm);
+    cJSON_AddNumberToObject(root, "gsr", gsr);
+    if (has_skin_temp) {
+        cJSON_AddNumberToObject(root, "skinTemp", skin_temp);
+    } else {
+        cJSON_AddNullToObject(root, "skinTemp");
+    }
+    cJSON_AddStringToObject(root, "timestamp", ts);
+
+    char *body = cJSON_PrintUnformatted(root);   // 힙에 할당된 문자열 → 아래서 반드시 free 필요
+
+    // --- 2) HTTP 클라이언트는 요청 1회용으로 매번 init → perform → cleanup ---
+    // (연결을 계속 유지하는 게 아니라 2초 주기 단발 요청이라 이 패턴이 단순하고 안전함)
+    esp_http_client_config_t http_cfg = {
+        .url = API_URL,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = API_TIMEOUT_MS,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "X-Api-Key", API_KEY);   // 서버의 BioMonitor:ApiKey와 대조됨
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    // --- 3) 전송 (동기 호출: 응답 받거나 timeout_ms 지날 때까지 이 태스크가 블로킹됨) ---
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "POST /api/biosignal -> HTTP %d", esp_http_client_get_status_code(client));
+    } else {
+        // DNS 실패, TLS 실패, timeout 등 전송 자체가 안 된 경우 (HTTP 상태코드와는 별개)
+        ESP_LOGE(TAG, "POST /api/biosignal 실패: %s", esp_err_to_name(err));
+    }
+
+    // --- 4) 정리: client 핸들, JSON 문자열, cJSON 트리 모두 매 호출마다 해제 ---
+    esp_http_client_cleanup(client);
+    cJSON_free(body);
+    cJSON_Delete(root);
+}
+
 /* ================= main ================= */
 void app_main(void)
 {
@@ -278,6 +450,15 @@ void app_main(void)
     gsr_init();
     max30102_init();
     gpio_reset_pin(DHT_GPIO);   // DHT 핀 준비
+
+    // WiFi가 안 붙어도 앱 자체는 죽지 않고 센서 읽기+시리얼 출력은 그대로 계속된다.
+    // (wifi_ok는 아래 루프에서 POST 여부를 결정하는 플래그로만 쓰임)
+    bool wifi_ok = wifi_init_sta();
+    if (wifi_ok) {
+        time_sync();
+    } else {
+        ESP_LOGW(TAG, "WiFi 연결 실패, 센서 값은 시리얼 출력만 진행");
+    }
 
     while (1) {
         // --- GSR ---
@@ -313,6 +494,14 @@ void app_main(void)
                 printf("MAX30102 : 온도=%.2f C\n", max_temp);
         } else {
             printf("MAX30102 : 미연결\n");
+        }
+
+        // --- API 전송 ---
+        // gsr_raw(ADC raw count)를 그대로 "gsr"로 보낸다 — 서버 TensionAnalyzer가 기대하는
+        // 절대 임계값(GsrAbsLow~GsrAbsHigh)도 아직 raw 단위 기준이라 캘리브레이션 전에는 그대로 사용.
+        // bpm은 PLACEHOLDER_BPM 고정값(위 TODO 참고), skinTemp는 dht_ok가 false면 null로 전송됨.
+        if (wifi_ok) {
+            post_biosignal(PLACEHOLDER_BPM, gsr_raw, dht_ok, t);
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
