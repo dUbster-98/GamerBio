@@ -1,14 +1,13 @@
-@page "/event"
-@rendermode InteractiveServer
+﻿@page "/event"
 @using System.Globalization
 @using GamerBio.Data
-@using GamerBio.Hubs
 @using GamerBio.Models
-@using Microsoft.AspNetCore.SignalR.Client
+@using GamerBio.Services
 @using Microsoft.EntityFrameworkCore
 @inject IServiceScopeFactory ScopeFactory
-@inject NavigationManager Nav
-@implements IAsyncDisposable
+@inject BioEventBus Bus
+@inject PersistentComponentState AppState
+@implements IDisposable
 
 <PageTitle>Event Log · GamerBio</PageTitle>
 
@@ -93,12 +92,15 @@
 
 @code {
     private const int MaxRows = 500;
+    private const string StateKey = "deadly.events";
 
     // All loaded events (newest first). Deadly entries are rare, so we hold the
     // full set client-side and filter by date in memory rather than re-querying.
     private readonly List<DeadlyEvent> _all = new();
     private DateOnly? _selectedDate;   // null = show everything
-    private HubConnection? _connection;
+    private PersistingComponentStateSubscription _persistSub;
+    private bool _initialized;
+    private bool _subscribed;
 
     // Distinct local dates that have events, newest first (for the filter chips).
     private IReadOnlyList<DateOnly> _dates = Array.Empty<DateOnly>();
@@ -109,28 +111,63 @@
             ? _all.Where(e => LocalDate(e) == d).ToList()
             : _all;
 
-    protected override async Task OnInitializedAsync()
+    // Loaded before the first render (not in OnInitializedAsync): an async
+    // OnInitializedAsync renders once with an empty list as soon as it awaits,
+    // wiping the prerendered rows until the query comes back. See Gallery.razor
+    // for the same pattern.
+    public override async Task SetParametersAsync(ParameterView parameters)
     {
-        await ReloadAsync();
+        // ParameterView can only be read synchronously, so apply it before the
+        // first await and hand base an empty one afterwards.
+        parameters.SetParameterProperties(this);
 
-        // Live-prepend Deadly entries as the server records them.
-        _connection = new HubConnectionBuilder()
-            .WithUrl(Nav.ToAbsoluteUri(BioSignalHub.Path))
-            .WithAutomaticReconnect()
-            .Build();
-
-        _connection.On<DeadlyEvent>(BioSignalHub.DeadlyEventRecorded, async e =>
+        if (!_initialized)
         {
-            if (_all.All(x => x.Id != e.Id))
-            {
-                _all.Insert(0, e);
-                RebuildDates();
-                await InvokeAsync(StateHasChanged);
-            }
-        });
+            _initialized = true;
 
-        await _connection.StartAsync();
+            // Carry the prerendered rows into the interactive pass so a direct
+            // page load doesn't query twice.
+            _persistSub = AppState.RegisterOnPersisting(() =>
+            {
+                AppState.PersistAsJson(StateKey, _all);
+                return Task.CompletedTask;
+            });
+
+            if (AppState.TryTakeFromJson<List<DeadlyEvent>>(StateKey, out var restored) && restored is not null)
+            {
+                _all.AddRange(restored);
+                RebuildDates();
+            }
+            else
+            {
+                await ReloadAsync();
+            }
+        }
+
+        await base.SetParametersAsync(ParameterView.Empty);
     }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // Interactive pass only — a prerendered instance never gets here, so the
+        // subscription can't outlive a render that has no Dispose partner.
+        if (firstRender)
+        {
+            Bus.DeadlyEventRecorded += OnDeadlyEvent;
+            _subscribed = true;
+        }
+    }
+
+    // Live-prepend Deadly entries as the server records them.
+    private void OnDeadlyEvent(DeadlyEvent e) => _ = InvokeAsync(() =>
+    {
+        if (_all.All(x => x.Id != e.Id))
+        {
+            _all.Insert(0, e);
+            RebuildDates();
+            StateHasChanged();
+        }
+    });
 
     private async Task ReloadAsync()
     {
@@ -166,11 +203,12 @@
         yield return ("EMO", e.EmotionScore);
     }
 
-    public async ValueTask DisposeAsync()
+    public void Dispose()
     {
-        if (_connection is not null)
+        if (_subscribed)
         {
-            await _connection.DisposeAsync();
+            Bus.DeadlyEventRecorded -= OnDeadlyEvent;
         }
+        _persistSub.Dispose();
     }
 }

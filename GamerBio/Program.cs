@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using GamerBio.Components;
 using GamerBio.Data;
 using GamerBio.Hubs;
@@ -15,6 +15,11 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddSignalR();
+
+// In-process fan-out for the server-rendered pages. They used to subscribe by
+// opening a SignalR HubConnection back to this same host's public URL (a round
+// trip out through the Cloudflare Tunnel) inside OnInitializedAsync.
+builder.Services.AddSingleton<BioEventBus>();
 builder.Services.AddSingleton<TensionAnalyzer>();
 builder.Services.AddSingleton<GalleryStorage>();
 builder.Services.AddSingleton<NewsStorage>();
@@ -188,6 +193,7 @@ api.MapPost("/biosignal", async (
     BioSignalDto dto,
     BioMonitorContext db,
     IHubContext<BioSignalHub> hub,
+    BioEventBus bus,
     TensionAnalyzer analyzer,
     DiscordBotService bot,
     ILogger<Program> logger) =>
@@ -206,7 +212,7 @@ api.MapPost("/biosignal", async (
     var tension = analyzer.UpdateBio(entity, out var deadlyEntry);
     if (deadlyEntry is not null)
     {
-        await RecordDeadlyEntryAsync(deadlyEntry, db, hub, logger);
+        await RecordDeadlyEntryAsync(deadlyEntry, db, hub, bus, logger);
     }
 
     logger.LogInformation("Biosignal saved: id={Id} BPM={Bpm} GSR={Gsr} Temp={Temp} → tension={State}({Score})",
@@ -214,6 +220,8 @@ api.MapPost("/biosignal", async (
 
     await hub.Clients.All.SendAsync(BioSignalHub.BioSignalReceived, entity);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
+    bus.PublishBioSignal(entity);
+    bus.PublishTension(tension);
     bot.NotifyTension(tension);   // queued: the response must not wait on Discord
 
     return Results.Ok(new { id = entity.Id, receivedAt = entity.ReceivedAt, tension });
@@ -300,6 +308,7 @@ api.MapPost("/gallery/capture", async (
     BioMonitorContext db,
     GalleryStorage storage,
     IHubContext<BioSignalHub> hub,
+    BioEventBus bus,
     string? emotion,
     double? score) =>
 {
@@ -334,6 +343,7 @@ api.MapPost("/gallery/capture", async (
     await db.SaveChangesAsync();
 
     await hub.Clients.All.SendAsync(BioSignalHub.GalleryPhotoAdded, photo);
+    bus.PublishGalleryPhoto(photo);
     return Results.Ok(new { id = photo.Id });
 });
 
@@ -341,6 +351,7 @@ api.MapPost("/emotion", async (
     EmotionDto dto,
     BioMonitorContext db,
     IHubContext<BioSignalHub> hub,
+    BioEventBus bus,
     TensionAnalyzer analyzer,
     DiscordBotService bot,
     ILogger<Program> logger) =>
@@ -354,11 +365,13 @@ api.MapPost("/emotion", async (
     var tension = analyzer.UpdateEmotion(reading, out var deadlyEntry);
     if (deadlyEntry is not null)
     {
-        await RecordDeadlyEntryAsync(deadlyEntry, db, hub, logger);
+        await RecordDeadlyEntryAsync(deadlyEntry, db, hub, bus, logger);
     }
 
     await hub.Clients.All.SendAsync(BioSignalHub.EmotionUpdated, reading);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
+    bus.PublishEmotion(reading);
+    bus.PublishTension(tension);
     bot.NotifyTension(tension);   // queued: the response must not wait on Discord
 
     return Results.Ok(new { tension });
@@ -372,6 +385,7 @@ static async Task RecordDeadlyEntryAsync(
     DeadlyEvent entry,
     BioMonitorContext db,
     IHubContext<BioSignalHub> hub,
+    BioEventBus bus,
     ILogger logger)
 {
     db.DeadlyEvents.Add(entry);
@@ -379,6 +393,7 @@ static async Task RecordDeadlyEntryAsync(
     logger.LogWarning("Deadly tension entered: score={Score} BPM={Bpm} GSR={Gsr} emotion={Emotion}",
         entry.Score, entry.Bpm?.ToString() ?? "-", entry.Gsr, entry.DominantEmotion ?? "-");
     await hub.Clients.All.SendAsync(BioSignalHub.DeadlyEventRecorded, entry);
+    bus.PublishDeadlyEvent(entry);
 }
 
 // Bpm is optional: the wearable omits it (sends null) while the PPG sensor has no

@@ -4,12 +4,6 @@
 
 ---
 
-# 준수 사항
-
-> 빌드는 반드시 사용자가 직접 수행한다. 사용자가 빌드를 요청할 때에만 빌드를 수행할것.
-
----
-
 ## 📌 프로젝트 개요
 
 | 항목 | 내용 |
@@ -34,6 +28,8 @@
 | EF Core 마이그레이션 (`biosignals` 테이블) | ✅ 앱 시작 시 자동 적용 |
 | 배포 파이프라인 | ✅ PC `dotnet publish` → `scp` → systemd restart |
 | SignalR Hub (`BioSignalHub`) + Blazor 실시간 푸시 | ✅ `BioSignalReceived` / `TensionUpdated` 동작 |
+| 페이지 실시간 구독 → `BioEventBus`(인프로세스) 전환 + 프리렌더 깜빡임 제거 | ✅ 서버가 자기 자신에게 WebSocket을 걸던 구조 폐기, 첫 렌더에 데이터 확보 (아래 참고) |
+| 전역 인터랙티브 렌더링 (`<Routes @rendermode="InteractiveServer" />`) | ✅ 앱 전체가 서킷 1개 위에서 동작 → 메뉴 이동 10~70ms, 문서 재로드 없음 (헤드리스 크롬으로 실측) |
 | `TensionAnalyzer` 멀티모달 융합 + 상태 분류 | ✅ BPM/GSR/저변동성/**감정** 가중 융합 → Relaxed/Focused/Stressed/**Deadly** |
 | Blazor `/dashboard` 라이브 대시보드 | ✅ 캠 패널 + 감정 라벨 + 텐션 게이지 + 바이탈 + 피드 |
 | **[PC]** DeepFace 감정 분석 앱 (`deepface/emotion_webcam.py`) | ✅ 게임 특화 최적화 (아래 참고) |
@@ -73,6 +69,18 @@
 - PC `CapturePoster`(별도 스레드, 재무장+쿨다운 가드)가 인코딩·전송 담당. 설정은 파일 상단 `DEFAULT_*` 블록 또는 `--capture-url`/`--capture-threshold`/`--capture-cooldown`/`--api-key`/`--insecure`(BooleanOptionalAction)로 오버라이드
 - SignalR `GalleryPhotoAdded` → 갤러리 페이지가 캡처 사진을 실시간으로 맨 앞에 추가
 - 로컬 검증 교훈: https 자체서명 인증서로 PC POST가 SSL 실패하는데 스크립트가 에러를 삼켜 무증상 → `--insecure`(verify off) + 1회성 실패 로그로 해결. 프로덕션(LAN 평문 http)은 `--insecure` 불필요
+
+**실시간 구독 인프로세스화 + 프리렌더 깜빡임 제거 (2026-08-24):**
+
+- **증상**: `/gallery`·`/event`에 들어가면 목록이 잠깐 보였다가 사라지고 몇 초 뒤 다시 나타남. 페이지 전환 클릭 반응도 전반적으로 느림.
+- **원인 ①(느림)**: 페이지들이 `HubConnection`으로 `Nav.ToAbsoluteUri("/hubs/biosignal")`에 접속했는데, 이 코드는 **Blazor Server**라 서버에서 돈다 → RPi가 자기 공개 도메인(`bio-monitor.uk`)으로 나갔다가 **Cloudflare Tunnel을 거쳐 자기 자신에게** 돌아오는 WebSocket을 페이지마다 하나씩 열고 있었다. 접속 핸드셰이크가 `OnInitializedAsync` 안에 있어 그 왕복이 끝나야 초기화가 끝났고, 이후 모든 이벤트도 같은 경로를 왕복했다.
+- **원인 ②(깜빡임)**: 페이지는 프리렌더(정적 SSR) + 인터랙티브, 두 번 렌더된다. 인터랙티브 인스턴스는 상태가 비어 있는데 `OnInitializedAsync`가 `await`하는 순간 Blazor가 **빈 상태로 한 번 렌더**한다 → 프리렌더된 목록이 지워지고, DB 조회(+위의 WebSocket 왕복)가 끝나야 다시 채워진다.
+- **해결 ①**: `BioEventBus`(싱글톤, C# `event`) 도입. 엔드포인트가 `IHubContext` 브로드캐스트와 함께 버스에도 발행하고, 서버 렌더 페이지는 버스를 구독한다(구독은 `OnAfterRender(firstRender)` — 프리렌더 인스턴스가 구독을 남기지 않는다). SignalR Hub는 외부/브라우저 클라이언트용으로 그대로 유지. 페이지 I/O 0.
+- **해결 ②**: 초기 로드를 `OnInitializedAsync`가 아니라 **`SetParametersAsync`에서 `base` 호출 전에** 수행 → 컴포넌트의 첫 렌더가 이미 데이터를 갖고 있어 프리렌더 마크업이 동일 내용으로 교체된다(중간 빈 렌더 없음). 추가로 `PersistentComponentState`로 프리렌더가 조회한 목록을 인터랙티브 패스에 넘겨 DB 재조회도 생략. (.NET 9는 서킷 시작 시점에만 저장 상태를 읽으므로, 서킷이 이미 살아 있는 페이지 이동은 `SetParametersAsync` 쪽이 담당한다)
+- **대시보드**: 진입 즉시 `TensionAnalyzer.Latest()`로 현재 상태를 표시(예전엔 다음 패킷까지 `Calibrating`). 접속 표시등은 이제 연결 상태가 아니라 **데이터 신선도**(마지막 패킷 10초 이내)를 보여준다 — 인프로세스라 "연결"이라는 개념이 없어졌기 때문. 2초 `PeriodicTimer`가 상태가 바뀔 때만 렌더한다.
+- **해결 ③ (클릭 반응)**: `App.razor`를 `<Routes @rendermode="InteractiveServer" />`로 바꿔 **라우터 자체를 인터랙티브**로 전환. 이제 페이지 이동이 SSR 왕복(터널 경유 HTML 재요청)이 아니라 살아 있는 서킷 메시지 1회로 끝난다. 각 페이지의 `@rendermode InteractiveServer` 선언은 라우터에서 상속되므로 제거했고, 인터랙티브 라우터는 앱 내부 링크의 미매칭 경로를 스스로 처리하므로 `Routes.razor`에 `<NotFound>` 분기를 추가했다(주소창 직접 입력은 여전히 `UseStatusCodePagesWithReExecute` 경로).
+- **⚠️ `SetParametersAsync` 함정**: `await` 뒤에 `base.SetParametersAsync(parameters)`를 부르면 `ParameterView instance can no longer be read because it has expired`로 터진다(ParameterView는 동기 구간에서만 유효). 반드시 **`parameters.SetParameterProperties(this)`를 먼저 호출**하고, 마지막엔 `base.SetParametersAsync(ParameterView.Empty)`를 넘긴다. DB가 빠르면 `await`가 동기 완료돼 증상이 안 보이다가 느려지는 순간 500이 나므로 특히 위험하다 — 실제로 로컬 검증 중 DB에 1.5초 지연을 넣고서야 드러났다.
+- **검증 방법**: 헤드리스 크롬 + CDP로 25ms 간격 DOM 스냅샷. 대조군(옛 코드 + DB 1.5초 지연)은 `사진 1장 → 0장(빈 상태 문구 렌더) → 1장`이 관측됐고, 수정본은 같은 조건에서 0장으로 떨어지는 구간이 없다. 메뉴 5회 클릭 이동 모두 10~70ms, `performance.getEntriesByType('navigation').length`는 끝까지 1(=문서 재로드 없음), 서버 예외 0건.
 
 **Discord 봇:**
 - **통합 방식**: 별도 프로세스가 아니라 기존 ASP.NET 호스트 안의 `BackgroundService`(`DiscordBotService`)로 실행 → `TensionAnalyzer` 싱글톤을 웹/SignalR/디스코드가 공유. `Program.cs`에서 싱글톤+`AddHostedService`로 1회 등록 (엔드포인트가 알림용으로 주입받을 수 있게 동일 인스턴스)

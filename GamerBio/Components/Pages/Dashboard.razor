@@ -1,12 +1,11 @@
-@page "/dashboard"
-@rendermode InteractiveServer
+﻿@page "/dashboard"
 @using System.Globalization
-@using GamerBio.Hubs
 @using GamerBio.Models
-@using Microsoft.AspNetCore.SignalR.Client
-@inject NavigationManager Nav
+@using GamerBio.Services
 @inject IConfiguration Config
-@implements IAsyncDisposable
+@inject BioEventBus Bus
+@inject TensionAnalyzer Analyzer
+@implements IDisposable
 
 <PageTitle>Live Dashboard · GamerBio</PageTitle>
 
@@ -18,9 +17,9 @@
             <h1 class="dash-title">Bio Dashboard</h1>
         </div>
 
-        <div class="conn-pill @(IsConnected ? "is-on" : "is-off")">
+        <div class="conn-pill @(_live ? "is-on" : "is-off")">
             <span class="conn-dot"></span>
-            <span class="mono">@(IsConnected ? "STREAM LIVE" : (_connection?.State.ToString().ToUpperInvariant() ?? "OFFLINE"))</span>
+            <span class="mono">@(_live ? "STREAM LIVE" : "NO SIGNAL")</span>
         </div>
     </header>
 
@@ -76,7 +75,7 @@
                 </div>
 
                 <div class="ecg" aria-hidden="true">
-                    <div class="ecg-line @(IsConnected ? "live" : "")"
+                    <div class="ecg-line @(_live ? "live" : "")"
                          style="--beat: @BeatDuration"></div>
                 </div>
             </div>
@@ -193,16 +192,22 @@
 @code {
     private const int MaxRecent = 20;
 
-    private HubConnection? _connection;
+    // The wearable posts every 2s; treat the stream as dead once nothing has
+    // arrived for this long. (The page itself is always "connected" now that it
+    // reads events in-process, so the pill reports data freshness instead.)
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(10);
+
     private BioSignal? _latest;
     private TensionReading? _tension;
     private EmotionReading? _emotion;
     private readonly LinkedList<BioSignal> _recent = new();
 
+    private bool _live;
+    private bool _subscribed;
+    private CancellationTokenSource? _staleWatch;
+
     // PC MJPEG stream URL (e.g. http://192.168.0.50:8080). Null when unconfigured.
     private string? _camUrl;
-
-    private bool IsConnected => _connection?.State == HubConnectionState.Connected;
 
     // Drive the heartbeat animation speed from the live BPM (seconds per beat).
     // Falls back to 1s when there is no reading at all — the sensor reports no
@@ -211,44 +216,78 @@
         (_latest is { Bpm: > 0 } s ? (60.0 / s.Bpm.Value) : 1.0)
             .ToString("0.000", CultureInfo.InvariantCulture) + "s";
 
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized()
     {
         var cam = Config["Camera:StreamUrl"];
         _camUrl = string.IsNullOrWhiteSpace(cam) ? null : cam;
 
-        _connection = new HubConnectionBuilder()
-            .WithUrl(Nav.ToAbsoluteUri(BioSignalHub.Path))
-            .WithAutomaticReconnect()
-            .Build();
+        // Show the current fused state immediately instead of "Calibrating"
+        // until the next packet lands.
+        _tension = Analyzer.Latest();
+    }
 
-        _connection.On<BioSignal>(BioSignalHub.BioSignalReceived, async signal =>
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender)
         {
-            _latest = signal;
-            _recent.AddFirst(signal);
-            while (_recent.Count > MaxRecent)
+            return;
+        }
+
+        Bus.BioSignalReceived += OnBioSignal;
+        Bus.TensionUpdated += OnTension;
+        Bus.EmotionUpdated += OnEmotion;
+        _subscribed = true;
+
+        _staleWatch = new CancellationTokenSource();
+        _ = WatchStalenessAsync(_staleWatch.Token);
+    }
+
+    private void OnBioSignal(BioSignal signal) => _ = InvokeAsync(() =>
+    {
+        _latest = signal;
+        _recent.AddFirst(signal);
+        while (_recent.Count > MaxRecent)
+        {
+            _recent.RemoveLast();
+        }
+        _live = true;
+        StateHasChanged();
+    });
+
+    private void OnTension(TensionReading reading) => _ = InvokeAsync(() =>
+    {
+        _tension = reading;
+        StateHasChanged();
+    });
+
+    private void OnEmotion(EmotionReading reading) => _ = InvokeAsync(() =>
+    {
+        _emotion = reading;
+        StateHasChanged();
+    });
+
+    // Nothing pushes an event when packets *stop*, so poll for the gap. Only
+    // re-renders on the transition, not on every tick.
+    private async Task WatchStalenessAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
             {
-                _recent.RemoveLast();
+                var live = _latest is not null
+                    && DateTimeOffset.UtcNow - _latest.ReceivedAt < StaleAfter;
+                if (live != _live)
+                {
+                    _live = live;
+                    await InvokeAsync(StateHasChanged);
+                }
             }
-            await InvokeAsync(StateHasChanged);
-        });
-
-        _connection.On<TensionReading>(BioSignalHub.TensionUpdated, async reading =>
+        }
+        catch (OperationCanceledException)
         {
-            _tension = reading;
-            await InvokeAsync(StateHasChanged);
-        });
-
-        _connection.On<EmotionReading>(BioSignalHub.EmotionUpdated, async reading =>
-        {
-            _emotion = reading;
-            await InvokeAsync(StateHasChanged);
-        });
-
-        _connection.Reconnected += _ => InvokeAsync(StateHasChanged);
-        _connection.Closed += _ => InvokeAsync(StateHasChanged);
-
-        await _connection.StartAsync();
-        await InvokeAsync(StateHasChanged);
+            // Page left — nothing to do.
+        }
     }
 
     private static string StateLabel(TensionState state) => state switch
@@ -293,11 +332,16 @@
         _ => "var(--st-calibrating)",
     };
 
-    public async ValueTask DisposeAsync()
+    public void Dispose()
     {
-        if (_connection is not null)
+        if (_subscribed)
         {
-            await _connection.DisposeAsync();
+            Bus.BioSignalReceived -= OnBioSignal;
+            Bus.TensionUpdated -= OnTension;
+            Bus.EmotionUpdated -= OnEmotion;
         }
+
+        _staleWatch?.Cancel();
+        _staleWatch?.Dispose();
     }
 }

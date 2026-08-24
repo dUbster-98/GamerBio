@@ -19,7 +19,11 @@
 </head>
 
 <body>
-    <Routes />
+    @* Interactive at the router level: the whole app (layout + every page) lives
+       in one long-lived circuit, so a menu click is a single circuit message
+       instead of a full SSR round trip through the Cloudflare Tunnel. Every
+       page inherits this mode, which is why none of them declare @rendermode. *@
+    <Routes @rendermode="InteractiveServer" />
     <ReconnectModal />
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>
