@@ -210,11 +210,11 @@ api.MapPost("/biosignal", async (
     }
 
     logger.LogInformation("Biosignal saved: id={Id} BPM={Bpm} GSR={Gsr} Temp={Temp} → tension={State}({Score})",
-        entity.Id, entity.Bpm, entity.Gsr, entity.SkinTemp, tension.State, tension.Score);
+        entity.Id, entity.Bpm?.ToString() ?? "-", entity.Gsr, entity.SkinTemp, tension.State, tension.Score);
 
     await hub.Clients.All.SendAsync(BioSignalHub.BioSignalReceived, entity);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
-    await bot.NotifyTensionAsync(tension);
+    bot.NotifyTension(tension);   // queued: the response must not wait on Discord
 
     return Results.Ok(new { id = entity.Id, receivedAt = entity.ReceivedAt, tension });
 });
@@ -359,7 +359,7 @@ api.MapPost("/emotion", async (
 
     await hub.Clients.All.SendAsync(BioSignalHub.EmotionUpdated, reading);
     await hub.Clients.All.SendAsync(BioSignalHub.TensionUpdated, tension);
-    await bot.NotifyTensionAsync(tension);
+    bot.NotifyTension(tension);   // queued: the response must not wait on Discord
 
     return Results.Ok(new { tension });
 });
@@ -377,9 +377,11 @@ static async Task RecordDeadlyEntryAsync(
     db.DeadlyEvents.Add(entry);
     await db.SaveChangesAsync();
     logger.LogWarning("Deadly tension entered: score={Score} BPM={Bpm} GSR={Gsr} emotion={Emotion}",
-        entry.Score, entry.Bpm, entry.Gsr, entry.DominantEmotion ?? "-");
+        entry.Score, entry.Bpm?.ToString() ?? "-", entry.Gsr, entry.DominantEmotion ?? "-");
     await hub.Clients.All.SendAsync(BioSignalHub.DeadlyEventRecorded, entry);
 }
 
-record BioSignalDto(int Bpm, int Gsr, double? SkinTemp, DateTimeOffset Timestamp);
+// Bpm is optional: the wearable omits it (sends null) while the PPG sensor has no
+// skin contact, which the analyzer treats as "no reading" rather than a zero heart rate.
+record BioSignalDto(int? Bpm, int Gsr, double? SkinTemp, DateTimeOffset Timestamp);
 record EmotionDto(string? Dominant, Dictionary<string, double>? Scores, DateTimeOffset? Timestamp);

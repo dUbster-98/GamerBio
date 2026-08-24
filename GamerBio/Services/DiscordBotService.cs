@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
@@ -19,8 +20,20 @@ public class DiscordBotService : BackgroundService
     private readonly string _token;
     private readonly ulong _alertChannelId;
 
+    // Alerts are queued here instead of being sent inline, so that a slow (or
+    // rate-limited) Discord REST call never delays the HTTP response to the ESP32.
+    // Bounded + DropOldest means a stalled bot can't grow this without limit, and
+    // dropping a stale reading is harmless: the dedup below keys off the newest state.
+    private readonly Channel<TensionReading> _alerts =
+        Channel.CreateBounded<TensionReading>(new BoundedChannelOptions(32)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+        });
+
     // Only fire an alert when the state actually changes, so we don't spam the
-    // channel on every biosignal sample.
+    // channel on every biosignal sample. Touched only by the single drain loop,
+    // so it needs no synchronization.
     private TensionState _lastNotified = TensionState.Calibrating;
 
     public DiscordBotService(
@@ -76,10 +89,10 @@ public class DiscordBotService : BackgroundService
         await _client.LoginAsync(TokenType.Bot, _token);
         await _client.StartAsync();
 
-        // Keep the service alive until the host shuts down, then log out cleanly.
+        // Drain queued alerts until the host shuts down, then log out cleanly.
         try
         {
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            await DrainAlertsAsync(stoppingToken);
         }
         catch (OperationCanceledException)
         {
@@ -93,10 +106,36 @@ public class DiscordBotService : BackgroundService
     }
 
     /// <summary>
+    /// Queue a stress alert. Returns immediately and never throws, so request
+    /// handlers can call it without tying their response time to Discord's API.
+    /// If the bot is disabled, queued readings are simply discarded.
+    /// </summary>
+    public void NotifyTension(TensionReading tension) => _alerts.Writer.TryWrite(tension);
+
+    /// <summary>
+    /// Single consumer for <see cref="_alerts"/>. A failed send is logged and skipped;
+    /// it must never tear down the loop, or alerts would stop silently.
+    /// </summary>
+    private async Task DrainAlertsAsync(CancellationToken stoppingToken)
+    {
+        await foreach (var tension in _alerts.Reader.ReadAllAsync(stoppingToken))
+        {
+            try
+            {
+                await SendAlertAsync(tension);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Discord alert send failed; skipping this one.");
+            }
+        }
+    }
+
+    /// <summary>
     /// Push a stress alert to the configured channel, but only on a transition
     /// into the Stressed or Deadly state (deduplicated against the last notified state).
     /// </summary>
-    public async Task NotifyTensionAsync(TensionReading tension)
+    private async Task SendAlertAsync(TensionReading tension)
     {
         if (tension.State == _lastNotified)
         {
@@ -117,6 +156,10 @@ public class DiscordBotService : BackgroundService
         if (_client.GetChannel(_alertChannelId) is IMessageChannel channel)
         {
             await channel.SendMessageAsync(message);
+        }
+        else
+        {
+            _logger.LogWarning("Discord alert channel {ChannelId} not reachable (bot not ready?)", _alertChannelId);
         }
     }
 }

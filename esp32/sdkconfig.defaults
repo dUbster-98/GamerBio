@@ -1,0 +1,23 @@
+# GamerBio ESP32-S3 기본 설정
+# 이 파일은 sdkconfig가 없을 때(첫 빌드) 기준값으로 적용된다.
+# sdkconfig 자체는 .gitignore 처리돼 있으므로 팀/재설치 환경에서도 동일한 값이 나오도록 여기에 남긴다.
+
+# app_main이 도는 main 태스크 스택. IDF 기본값은 3584바이트인데,
+# mbedTLS TLS 핸드셰이크가 이 태스크 안에서 일어나므로(post_biosignal → esp_http_client_perform)
+# 기본값으로는 스택 오버플로로 리부팅한다. HTTPS를 쓰는 동안은 8KB 이상 필요.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# WiFi + mbedTLS + 루트 CA 번들을 넣으면 바이너리가 기본 factory 파티션(1MB)을 넘긴다.
+# "Single factory app (large), no OTA" = factory 1.5MB (2MB 플래시에도 들어감).
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# esp_crt_bundle_attach가 쓰는 내장 루트 CA 번들 (기본 y지만 명시해 둠)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# bio-monitor.uk(Cloudflare)는 인증서 체인 마지막에 "교차 서명된 GTS Root R4"를 보낸다.
+# 이 교차 서명본의 발급자는 GlobalSign Root CA(R1)인데, R1은 Mozilla 신뢰 목록에서
+# 빠져서 IDF 루트 CA 번들(144개)에 없다 → "No matching trusted root certificate found".
+# 번들에는 자체 서명된 GTS Root R4가 들어 있으므로, 이 옵션을 켜서 체인 중간(WE1)의
+# 발급자를 번들에서 직접 찾아 신뢰 앵커로 삼게 한다. (힙 약 700바이트 추가 사용)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y

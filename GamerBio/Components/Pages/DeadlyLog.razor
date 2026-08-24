@@ -66,7 +66,7 @@
 
                         <div class="row-vitals mono">
                             <div class="row-time mono">@e.OccurredAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</div>
-                            <span class="v-bpm">♥ @e.Bpm BPM</span>
+                            <span class="v-bpm">♥ @(e.Bpm?.ToString() ?? "––") BPM</span>
                             <span class="v-gsr">GSR @e.Gsr</span>
                             <span class="v-emo">@(e.DominantEmotion ?? "—")</span>
                         </div>

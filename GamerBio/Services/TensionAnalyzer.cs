@@ -21,6 +21,11 @@ public class TensionAnalyzer
     private const double StdDevLow = 2;
     private const double StdDevHigh = 10;
 
+    // Variability needs a real series behind it: a standard deviation over two
+    // or three samples is noise, not a physiological reading. Below this count
+    // the factor drops out of the fusion rather than reporting a made-up value.
+    private const int VariabilityMinSamples = 10;
+
     // A racing heart must not be averaged away by a calm face or flat GSR:
     // at BpmExtreme+ the composite is floored straight into Deadly territory.
     private const double BpmExtreme = 160;
@@ -40,8 +45,12 @@ public class TensionAnalyzer
     private const int EmotionWindowMinSamples = 5;
 
     // Multimodal fusion weights (BPM + GSR + low-variability + emotion).
-    // When no fresh emotion is available, the emotion weight is dropped and the
-    // remaining three are renormalized, so the system degrades to bio-only.
+    // Any factor whose input is missing has its weight dropped and the survivors
+    // renormalized, so the composite always stays on a 0-100 scale:
+    //   · emotion  — no fresh reading from the PC (camera off / stale)
+    //   · BPM      — the PPG sensor has no skin contact (BioSignal.Bpm is null)
+    //   · low-var  — follows BPM, since it is computed from the BPM series
+    // GSR is the only factor always present, so the weight sum is never zero.
     private const double WeightBpm = 0.35;
     private const double WeightGsr = 0.25;
     private const double WeightLowVariability = 0.15;
@@ -184,7 +193,7 @@ public class TensionAnalyzer
             LowVariabilityScore = reading.LowVariabilityScore,
             EmotionScore = reading.EmotionScore,
             DominantEmotion = reading.DominantEmotion,
-            Bpm = _latestBio?.Bpm ?? 0,
+            Bpm = _latestBio?.Bpm,
             Gsr = _latestBio?.Gsr ?? 0,
         };
     }
@@ -206,7 +215,12 @@ public class TensionAnalyzer
 
         var sample = _latestBio;
 
-        int bpmScore = MapScore(sample.Bpm, BpmLow, BpmHigh);
+        // The wearable reports a heart rate only while the PPG sensor has skin
+        // contact. A missing BPM is not a BPM of zero: scoring it as zero would
+        // read as "perfectly calm" and, worse, would poison the variability
+        // window with a fake flat line. So it drops out of the fusion instead.
+        bool hasBpm = sample.Bpm is not null;
+        int bpmScore = hasBpm ? MapScore(sample.Bpm.Value, BpmLow, BpmHigh) : 0;
 
         int baselineCount = Math.Max(1, _window.Count / 2);
         double gsrBaseline = _window.Take(baselineCount).Average(x => x.Gsr);
@@ -216,30 +230,48 @@ public class TensionAnalyzer
             MapScore(gsrDelta, GsrDeltaMin, GsrDeltaMax),
             MapScore(sample.Gsr, GsrAbsLow, GsrAbsHigh));
 
-        var recent = _window.TakeLast(VariabilityWindow).Select(x => (double)x.Bpm).ToArray();
-        double mean = recent.Average();
-        double variance = recent.Average(b => (b - mean) * (b - mean));
-        double stdDev = Math.Sqrt(variance);
-        int lowVariabilityScore = 100 - MapScore(stdDev, StdDevLow, StdDevHigh);
+        // Only samples that actually carry a heart rate belong in the variability
+        // series — splicing across contact gaps would read as wild variability
+        // (and therefore as suspiciously *low* stress) purely from the gap.
+        var recent = _window.TakeLast(VariabilityWindow)
+            .Where(x => x.Bpm is not null)
+            .Select(x => (double)x.Bpm.Value)
+            .ToArray();
+        bool hasVariability = hasBpm && recent.Length >= VariabilityMinSamples;
+        int lowVariabilityScore = 0;
+        if (hasVariability)
+        {
+            double mean = recent.Average();
+            double variance = recent.Average(b => (b - mean) * (b - mean));
+            lowVariabilityScore = 100 - MapScore(Math.Sqrt(variance), StdDevLow, StdDevHigh);
+        }
 
-        // Weighted fusion; renormalize so the composite stays on a 0-100 scale
-        // whether or not emotion is part of the mix this round.
+        // Weighted fusion; renormalize over whichever factors actually have
+        // input this round so the composite stays on a 0-100 scale.
+        double wBpm = hasBpm ? WeightBpm : 0.0;
+        double wLowVariability = hasVariability ? WeightLowVariability : 0.0;
         double wEmotion = emotionFresh ? WeightEmotion : 0.0;
-        double weightSum = WeightBpm + WeightGsr + WeightLowVariability + wEmotion;
+        double weightSum = wBpm + WeightGsr + wLowVariability + wEmotion;
         int composite = (int)Math.Round(
-            (bpmScore * WeightBpm +
+            (bpmScore * wBpm +
              gsrScore * WeightGsr +
-             lowVariabilityScore * WeightLowVariability +
+             lowVariabilityScore * wLowVariability +
              emotionScore * wEmotion) / weightSum);
 
         // Escalation overrides — cases where the weighted average would let a
         // calm face (or a missing one) mask real danger. Each raises the
         // composite itself (not just the state) so the dashboard gauge agrees.
+        // Same renormalization, minus emotion. GSR always contributes, so the
+        // divisor can never be zero even with no heart rate at all.
         double bioComposite =
-            (bpmScore * WeightBpm + gsrScore * WeightGsr + lowVariabilityScore * WeightLowVariability)
-            / (WeightBpm + WeightGsr + WeightLowVariability);
-        bool extremeBpm = sample.Bpm >= BpmExtreme;
-        bool extremeBio = bioComposite >= BioOnlyExtreme;
+            (bpmScore * wBpm + gsrScore * WeightGsr + lowVariabilityScore * wLowVariability)
+            / (wBpm + WeightGsr + wLowVariability);
+        bool extremeBpm = hasBpm && sample.Bpm.Value >= BpmExtreme;
+        // This override speaks for "the sensors as a whole", so it needs more than
+        // one sensor. Without a heart rate, bioComposite collapses to the GSR score
+        // alone — and GSR's absolute band is still uncalibrated to the real sensor,
+        // so letting it force Deadly by itself would fire on every contact gap.
+        bool extremeBio = hasBpm && bioComposite >= BioOnlyExtreme;
         bool sustainedEmotion = bioComposite >= FocusedCeiling
             && bioComposite + WeightEmotion * WindowedEmotionStress(DateTimeOffset.UtcNow)
                >= StressedCeiling;

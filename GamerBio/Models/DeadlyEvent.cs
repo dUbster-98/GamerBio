@@ -21,7 +21,8 @@ public class DeadlyEvent
     public int EmotionScore { get; set; }
     public string? DominantEmotion { get; set; }
 
-    /// <summary>Raw vitals from the latest biosignal at the time of entry.</summary>
-    public int Bpm { get; set; }
+    /// <summary>Raw vitals from the latest biosignal at the time of entry.
+    /// Bpm is null when the PPG sensor had no skin contact at that moment.</summary>
+    public int? Bpm { get; set; }
     public int Gsr { get; set; }
 }

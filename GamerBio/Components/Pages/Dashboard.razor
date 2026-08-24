@@ -121,7 +121,7 @@
                 <span class="hud-eyebrow">Heart Rate</span>
                 <span class="vital-heart" style="--beat: @BeatDuration">♥</span>
             </div>
-            <div class="vital-num mono">@(_latest?.Bpm.ToString() ?? "––")</div>
+            <div class="vital-num mono">@(_latest?.Bpm?.ToString() ?? "––")</div>
             <div class="vital-unit mono">BPM</div>
         </div>
 
@@ -179,7 +179,7 @@
                     {
                         <tr>
                             <td class="t-time">@item.Timestamp.LocalDateTime.ToString("HH:mm:ss")</td>
-                            <td class="t-heart">@item.Bpm</td>
+                            <td class="t-heart">@(item.Bpm?.ToString() ?? "–")</td>
                             <td class="t-gsr">@item.Gsr</td>
                             <td class="t-temp">@(item.SkinTemp?.ToString("F1") ?? "–")</td>
                         </tr>
@@ -205,8 +205,10 @@
     private bool IsConnected => _connection?.State == HubConnectionState.Connected;
 
     // Drive the heartbeat animation speed from the live BPM (seconds per beat).
+    // Falls back to 1s when there is no reading at all — the sensor reports no
+    // BPM whenever it has lost skin contact.
     private string BeatDuration =>
-        (_latest is { Bpm: > 0 } s ? (60.0 / s.Bpm) : 1.0)
+        (_latest is { Bpm: > 0 } s ? (60.0 / s.Bpm.Value) : 1.0)
             .ToString("0.000", CultureInfo.InvariantCulture) + "s";
 
     protected override async Task OnInitializedAsync()

@@ -21,7 +21,7 @@
 
 ---
 
-## 📍 현재 진행 상황 스냅샷 (2026-07-06)
+## 📍 현재 진행 상황 스냅샷 (2026-08-24)
 
 | 항목 | 상태 |
 |------|------|
@@ -44,7 +44,8 @@
 | Blazor `/gallery` 갤러리 (사진 업로드/조회/삭제) | ✅ `InputFile` 업로드 + 그리드, RPi 디스크 저장 (메타데이터는 DB) |
 | `POST /api/gallery/capture` + surprise 자동 캡처 | ✅ PC가 **분석한 그 프레임**을 전송 → 갤러리 저장 + 실시간 갱신 |
 | 공개 도메인 `https://bio-monitor.uk` (Cloudflare Tunnel) | ✅ 대시보드 + 캠 영상 외부 접속 확인 |
-| ESP32 펌웨어 | 🔜 센서 3종(GSR/MAX30102/DHT22) 수령, 값 읽기 데모 작성 (`esp32/main/hello_world_main.c`, ESP-IDF v6 / ESP32-S3). DHT는 라벨과 달리 실제 DHT22(AM2302) 포맷 → 16비트 디코딩으로 검증(28.0°C/43.4%RH). WiFi POST·BPM 계산은 미착수 |
+| ESP32 펌웨어 (`esp32/main/main.c`, ESP-IDF v6 / ESP32-S3) | ✅ 센서 3종 + WiFi/SNTP + HTTPS POST + MAX30102 BPM 계산까지 동작 (아래 참고). 실센서 연결 상태에서의 실측 보정은 미완 |
+| 펌웨어 → MQTT 전환 | ⏸️ 보류 (아래 "MQTT 전환 보류 결정" 참고) |
 | 감정 DB 영속화 (`Emotion` 엔티티) | ⏳ 미착수 (현재 메모리상 최신값만 융합) |
 | Discord 봇 (`DiscordBotService`) — 알림 + 슬래시 명령 | ✅ 호스팅 서비스로 통합, `/status`·`/bpm` + Stressed/**Deadly** 진입 알림 (로컬 빌드 검증) |
 | **Deadly 단계 + 이벤트 로그** (`deadly_events` 테이블, `/event` 페이지) | ✅ 진입 시각+파라미터 DB 저장, 실시간 페이지 갱신 (로컬 검증) |
@@ -65,7 +66,7 @@
 - 로컬 검증: 동일 생체 입력에서 감정만 바꿔 composite `49(생체만) → 59(fear) → 38(happy)` 반응 확인
 - SignalR: `EmotionUpdated`(감정 원본) + `TensionUpdated`(융합 결과) 동시 푸시 → 대시보드 감정 라벨 + `EMOTION` 기여도 표시
 
-**갤러리 + surprise 자동 캡처 (이번 세션):**
+**갤러리 + surprise 자동 캡처:**
 - Blazor `/gallery` 페이지: `InputFile` 다중 업로드(캡션·드래그) + 썸네일 그리드 + 삭제, 메뉴에 `Gallery` 탭 추가
 - **저장 구조**: 이미지 파일은 **RPi 디스크**(`GalleryStorage`, `Gallery:StoragePath` 설정), 메타데이터(`GalleryPhoto` 엔티티 → `gallery_photos` 테이블, 마이그레이션 `AddGalleryPhotos`)만 PostgreSQL. `GET /gallery/media/{id}`가 디스크 파일을 스트리밍(파일은 wwwroot 밖, 경로 비노출)
 - **surprise 자동 캡처**: surprise가 임계값(기본 90) 초과 시 캡처. **타이밍 정확도를 위해 캡처 트리거를 PC로 이동** — DeepFace가 분석한 raw(평활화 전) 점수로 트리거하고 **그 분석 프레임 자체**를 `POST /api/gallery/capture`로 전송 → 서버는 받은 이미지를 그대로 저장. 서버가 사후에 라이브 프레임을 재촬영하던 방식(지연·불일치)을 폐기
@@ -73,12 +74,47 @@
 - SignalR `GalleryPhotoAdded` → 갤러리 페이지가 캡처 사진을 실시간으로 맨 앞에 추가
 - 로컬 검증 교훈: https 자체서명 인증서로 PC POST가 SSL 실패하는데 스크립트가 에러를 삼켜 무증상 → `--insecure`(verify off) + 1회성 실패 로그로 해결. 프로덕션(LAN 평문 http)은 `--insecure` 불필요
 
-**Discord 봇 (이번 세션):**
+**Discord 봇:**
 - **통합 방식**: 별도 프로세스가 아니라 기존 ASP.NET 호스트 안의 `BackgroundService`(`DiscordBotService`)로 실행 → `TensionAnalyzer` 싱글톤을 웹/SignalR/디스코드가 공유. `Program.cs`에서 싱글톤+`AddHostedService`로 1회 등록 (엔드포인트가 알림용으로 주입받을 수 있게 동일 인스턴스)
 - **라이브러리**: `Discord.Net` 3.20.1 (WebSocket + Interactions)
 - **슬래시 명령 (양방향)**: `BioCommands` 모듈의 `/status`(융합 텐션 전체), `/bpm`(심박 기여) → `TensionAnalyzer.Latest()`(신규 추가한 읽기 전용 스레드 안전 접근자)로 조회. 글로벌 등록은 반영 ~1시간 → 개발 중엔 `RegisterCommandsToGuildAsync(길드ID)`로 즉시 반영
 - **알림 (단방향)**: `/api/biosignal`·`/api/emotion`이 `TensionUpdated` 푸시 직후 `bot.NotifyTensionAsync(tension)` 호출. **상태 전환 시에만** 발송(`_lastNotified` 가드)하여 도배 방지, `Stressed` 진입 시 알림 채널에 메시지
 - **비밀 설정**: `Discord:Token`, `Discord:AlertChannelId`. PC 개발은 user-secrets(`UserSecretsId` csproj 등록됨), RPi 배포는 `appsettings.Production.json`(gitignore). 미설정 시 봇 비활성화 + 경고 로그 (앱은 정상 기동)
+
+**ESP32 펌웨어 (2026-08-24) — `esp32/main/main.c` 단일 파일:**
+
+- **부팅 순서**: 센서 init → WiFi(STA) → SNTP → API 자가진단 → 측정 루프. 어느 단계가 실패해도 앱은 죽지 않고 시리얼 출력을 계속하며 백그라운드로 복구를 시도한다.
+- **태스크 배치**: core 0 = `app_main`(2초 주기 HTTP 전송) + WiFi/TCP-IP, core 1 = `ppg_task`(100ms) + `dht_task`(10초).
+  타이밍이 걸린 센서 작업을 core 1로 몰아낸 이유는, DHT 비트뱅잉의 `taskENTER_CRITICAL`이 40비트 수신 동안 약 5ms 인터럽트를 막는데 그게 WiFi와 같은 코어면 통신이 밀리기 때문. 공유 상태는 `portMUX` 스핀락 스냅샷으로 주고받는다.
+- **MAX30102 FIFO**: `WR_PTR`/`OVF_COUNTER`/`RD_PTR`(0x04~0x06 연속 주소)을 한 번에 읽어 쌓인 개수를 구하고 그만큼 버스트로 꺼낸다. 오버플로가 보이면 신호 연속성이 끊긴 것이므로 박동 검출기를 리셋. 유효 샘플레이트 50Hz(`SPO2_SR`=100Hz ÷ `SMP_AVE`=2) → FIFO(32칸)가 640ms에 차므로 100ms 폴링에 6배 여유.
+- **BPM 계산**: 원시 IR → DC 제거(1차 IIR 하이패스) → 이동평균(5탭) → 적응 임계 **상승 교차** → IBI → **중앙값** → BPM.
+  - 시각을 `esp_timer_get_time()`이 아니라 **샘플 인덱스**로 센다. FIFO에서 5~10샘플을 몰아 읽기 때문에 읽은 시각을 쓰면 전부 같은 순간처럼 뭉개진다. 대가로 MAX30102 내부 오실레이터 오차 ±2%가 BPM에 실린다.
+  - 꼭대기가 아니라 진폭 중간의 상승 구간을 잡는 이유: 맥파 꼭대기는 평평해서 샘플마다 흔들리지만 상승 구간은 기울기가 급해 시각 지터가 작다.
+  - 평균이 아니라 중앙값인 이유: 박동을 하나 놓치면 그 IBI가 정확히 2배로 튀는데 평균은 끌려가고 중앙값은 무시한다.
+  - 손가락 감지는 원시 IR DC의 ON/OFF 히스테리시스(`PPG_FINGER_IR_ON`/`_OFF`).
+- **HTTP**: 핸들 하나를 keep-alive로 재사용(TLS 핸드셰이크 1회). 실패하거나 응답 본문을 끝까지 못 읽으면 `esp_http_client_cleanup()`으로 핸들째 버린다 — `close()`는 `fetch_headers` 단계에서 캐시된 본문 버퍼(`orig_raw_data`)를 해제하지 않아, 남겨두면 다음 응답의 `http_on_body`에서 `assert(orig_raw_data == raw_data)`가 터져 리부팅한다. 응답 본문은 버퍼를 넘겨도 sink로 끝까지 읽어낸다.
+- **전송 가드 3단계**: ① 지금 IP를 들고 있는가(`WIFI_CONNECTED_BIT`를 끊길 때 내린다) ② 시계가 맞았는가(1970 타임스탬프 차단) ③ 백오프 중이 아닌가(연속 실패 3회 초과 시 간격을 2배씩, 최대 60초). 어차피 실패할 요청에 8초 타임아웃을 쓰지 않는 게 목적.
+- **WiFi 재연결은 포기하지 않는다**. `WIFI_MAX_RETRY`는 "app_main을 언제 풀어줄까"의 기준일 뿐, 초과해도 `esp_wifi_connect()`는 계속 돈다 (공유기가 보드보다 늦게 켜지는 경우 대비). `scan_method`는 `WIFI_ALL_CHANNEL_SCAN` + `WIFI_CONNECT_AP_BY_SIGNAL` — 기본 FAST_SCAN은 같은 SSID 중 신호가 약한 중계기를 잡을 수 있다.
+- **미보정 항목 (실센서 연결 후 조정 필요)**:
+  - `PPG_FINGER_IR_ON/OFF` — LED 전류와 센서 개체차에 따라 다름. 시리얼에 IR 값을 항상 찍으니 손가락 유무를 비교해 맞출 것.
+  - 서버 `TensionAnalyzer.GsrAbsLow/High`(300/800) — 센서 미연결 플로팅 상태에서 이미 582가 나온다. 실제 이완/긴장 raw 값을 재고 다시 잡아야 한다.
+- **⚠️ `WIFI_PASS` / `API_KEY`가 소스에 하드코딩되어 있다.** 아직 커밋되진 않았으나 파일은 git 추적 대상이므로, 공개 전에 Kconfig나 NVS로 빼고 키를 재발급할 것.
+
+**BPM nullable 전환 (2026-08-24):**
+
+- 웨어러블은 PPG 센서에 피부 접촉이 있을 때만 심박을 보고한다. 접촉이 없을 때 0을 보내면 `TensionAnalyzer`가 "심박 0 = 완전히 평온"으로 채점하고, 더 나쁘게는 60샘플 변동성 창을 가짜 평탄선으로 오염시킨다(기존 `PLACEHOLDER_BPM 60`은 stdDev가 항상 0이라 모든 판정에 +15점을 상수로 더하고 있었다).
+- `BioSignal.Bpm` / `DeadlyEvent.Bpm` / `BioSignalDto.Bpm` → `int?`. 마이그레이션 `MakeBpmNullable` (두 테이블 `AlterColumn`, `Down()`은 NULL을 0으로 먼저 채운다). 펌웨어는 `"bpm":null`을 보낸다 — `skinTemp`가 쓰던 방식과 동일.
+- 융합은 감정이 stale일 때 쓰던 재정규화 패턴을 그대로 확장했다. 빠질 수 있는 요소가 셋: **감정**(PC 미연결/5초 초과), **BPM**(접촉 없음), **저변동성**(BPM을 따라감 + 유효 샘플 `VariabilityMinSamples`=10 미만). GSR만 항상 있으므로 가중치 합이 0이 되지 않는다. 변동성 창은 `Bpm`이 있는 샘플만 쓴다 — 접촉 공백을 이어 붙이면 그 공백 자체가 "심한 변동"으로 읽혀 오히려 스트레스가 낮게 나온다.
+- `BioOnlyExtreme`(생체 전용 90+ → Deadly) 오버라이드는 **BPM이 있을 때만** 적용한다. BPM이 없으면 `bioComposite`가 GSR 단독이 되는데, GSR 절대 임계값이 아직 미보정이라 접촉이 끊길 때마다 Deadly가 뜰 수 있다.
+- **배포 순서 주의**: 서버를 먼저 올려야 한다. 새 펌웨어의 `"bpm":null`을 구버전 서버(`int Bpm`)는 400으로 거부한다. 반대(새 서버 + 구 펌웨어)는 문제없다.
+
+**MQTT 전환 보류 결정 (2026-08-24):**
+
+계획상 "2단계"였으나 지금은 하지 않기로 했다. 근거:
+- **Cloudflare Tunnel이 MQTT(TCP 1883/8883)를 넘기지 못한다.** 현재 ESP32는 `https://bio-monitor.uk`로 POST해서 집 밖에서도 동작하는데, MQTT로 가면 LAN 전용으로 후퇴하거나 Tailscale VPN 또는 MQTT-over-WebSocket(`wss://`)을 새로 얹어야 한다. 잘 도는 경로를 복잡하게 만든다.
+- 디바이스 1대 / 2초 주기 / 단방향 업링크에서는 실익이 거의 없다. 서버에도 Mosquitto 브로커 + 구독 서비스가 늘어난다.
+- MQTT가 실제로 이기는 지점은 **양방향 명령**(서버→ESP32), **페이로드 크기**(HTTP 왕복 ~700B vs MQTT PUBLISH ~100B, 7배), **다중 디바이스**다. 앞의 둘은 배터리 구동으로 넘어가야 측정 가능한 이득이 된다.
+- 따라서 순서: ① MAX30102 실측 보정 + HRV → ② 배터리 + TP4056으로 웨어러블 완성 → ③ 그때 MQTT (LAN MQTT + 외부는 Tunnel HTTP 하이브리드). 전력 절감을 실측해 비교하면 그 자체가 포트폴리오 소재가 된다.
 
 **Deadly 단계 + 이벤트 로그 (2026-07-06):**
 - `TensionState`에 **Deadly** 추가: `<30 Relaxed / <65 Focused / <85 Stressed / ≥85 Deadly` (`StressedCeiling=85`). 대시보드·홈 범례·Discord 알림(☠️ 전용 메시지) 반영
@@ -110,7 +146,8 @@
   └─ MAX30102 심박센서 (I2C)
   └─ Grove GSR 피부전도도 센서 (Analog)
   └─ DHT22 (AM2302) 온습도 센서 (단선 디지털) [선택]
-  └─ WiFi HTTP POST → MQTT (리팩토링 예정)
+  └─ FreeRTOS 태스크 분리: core 0 = app_main(HTTP 전송) + WiFi / core 1 = PPG·DHT 센서
+  └─ WiFi STA → SNTP → HTTPS POST (keep-alive 연결 재사용)
         ↓ WiFi (로컬 or Tailscale VPN)
 [데스크탑 PC]
   └─ 웹캠 (USB) + OpenCV + MediaPipe
@@ -154,8 +191,7 @@
 | 레이어 | 기술 |
 |--------|------|
 | **펌웨어** | ESP32-S3 / ESP-IDF / FreeRTOS / C |
-| **통신 (1단계)** | WiFi / HTTP POST |
-| **통신 (2단계)** | MQTT (Mosquitto 브로커) |
+| **통신** | WiFi / HTTPS POST (keep-alive). MQTT 전환은 보류 — 아래 결정 기록 참고 |
 | **서버 OS** | Raspberry Pi OS 64-bit (Debian 13) |
 | **백엔드** | ASP.NET 9 Web API / C#|
 | **ORM** | EF Core 10 + Npgsql.EntityFrameworkCore.PostgreSQL (code-first migrations, 앱 시작 시 자동 적용) |
@@ -198,6 +234,10 @@
 ☠️ Deadly   : 융합 85+ 또는 BPM 160+ / 생체 전용 90+ / 센서 Stressed + 30초 공포 지속
 
 ※ 표정 데이터 (DeepFace, PC) + 생체 데이터 (ESP32) 융합으로 판정 정확도 향상
+※ 입력이 없는 요소는 가중치를 빼고 나머지를 재정규화한다 (감정 stale / BPM 접촉 없음 / 변동성 샘플 부족).
+   GSR만 항상 존재하므로 가중치 합이 0이 되는 경우는 없다.
+※ 위 표의 "HRV"는 아직 진짜 HRV가 아니다 — 현재는 BPM 시계열의 표준편차(저변동성 점수)로 근사한다.
+   펌웨어가 박동별 IBI를 이미 계산하므로, 그 값을 서버로 올리면 RMSSD/SDNN 실측이 다음 단계로 가능하다.
 ```
 ---
 
@@ -205,13 +245,14 @@
 
 | 항목 | 내용 |
 |------|------|
-| **RTOS 실설계** | FreeRTOS 멀티태스크 + 저전력 구조 |
+| **RTOS 실설계** | FreeRTOS 멀티태스크 + 코어 친화도 설계 (타이밍 크리티컬 센서를 WiFi와 분리) |
 | **HW-SW 인터페이스** | I2C / Analog(ADC) / 단선 디지털(DHT) 프로토콜 직접 구현 |
-| **무선 통신** | WiFi HTTP POST + MQTT 전환 경험 |
+| **무선 통신** | WiFi STA 재연결 설계 + HTTPS keep-alive + 전송 백오프 (MQTT는 근거를 갖고 보류) |
+| **신호처리** | PPG 원시 파형 → DC 제거 / 저역통과 / 적응 임계 피크 검출 → BPM 직접 구현 |
 | **컴퓨터 비전** | OpenCV + MediaPipe + DeepFace 실사용 |
 | **분산 처리 설계** | PC(추론) ↔ RPi5(서버) 역할 분리 아키텍처 |
 | **실시간 스트리밍** | MJPEG(영상) + SignalR(데이터) 이중 채널 설계 |
-| **멀티모달 융합** | 생체신호(ESP32) + 표정(DeepFace) 복합 판정 |
+| **멀티모달 융합** | 생체신호(ESP32) + 표정(DeepFace) 복합 판정, 결측 요소 가중치 재정규화 |
 | **풀스택 시스템** | MCU → Linux 서버 → 웹 대시보드 |
 | **도메인** | 헬스케어 + 게이밍 웨어러블 |
 | **웹 스킬 통합** | ASP.NET + Blazor + PostgreSQL 기존 역량 연결 |
@@ -255,6 +296,6 @@ biomonitor-api.service   ← ASP.NET 9 Web API + Blazor Server, 직접 작성한
 | Visual Studio / Rider | ASP.NET 9 백엔드 개발 |
 | Python 3.x (PC) | OpenCV / MediaPipe / DeepFace 컴퓨터 비전 |
 | DBeaver | PostgreSQL 관리 |
-| Mosquitto | MQTT 브로커 (RPi5) |
+| Mosquitto | MQTT 브로커 (RPi5) — 전환 보류 중이라 미설치 |
 
 ---
