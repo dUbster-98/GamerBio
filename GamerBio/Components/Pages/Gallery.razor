@@ -91,26 +91,18 @@
     private bool _initialized;
     private bool _subscribed;
 
-    // Loading happens here rather than in OnInitializedAsync on purpose. An
-    // async OnInitializedAsync renders once with empty state the moment it
-    // awaits, and that empty render replaces the prerendered grid until the
-    // query returns — the "photos show, disappear, come back" flicker. Doing
-    // the work before base.SetParametersAsync means the component's *first*
-    // render already has the rows, so the prerendered markup simply stays on
-    // screen until identical content replaces it.
+    // 로딩은 OnInitializedAsync가 아닌 여기서 수행
+    // SetParametersAsync 이전에 작업을 수행하면 컴포넌트의 첫 렌더링 시 이미 행이 존재하므로 
+    // prerendered 마크업은 동일한 내용으로 대체될 때까지 화면에 그대로 유지.
     public override async Task SetParametersAsync(ParameterView parameters)
     {
-        // ParameterView can only be read synchronously, so apply it before the
-        // first await and hand base an empty one afterwards.
+		// 첫번째 await 전에 파라미터를 적용하고 이후 빈 ParameterView를 전달함
         parameters.SetParameterProperties(this);
 
         if (!_initialized)
         {
             _initialized = true;
 
-            // The page renders twice — prerender, then the interactive circuit.
-            // Handing the rows across skips the second query entirely on a
-            // direct page load.
             _persistSub = AppState.RegisterOnPersisting(() =>
             {
                 AppState.PersistAsJson(StateKey, _photos);
@@ -132,9 +124,6 @@
 
     protected override void OnAfterRender(bool firstRender)
     {
-        // Only ever called on the interactive pass, so the subscription (and its
-        // matching Dispose) can't leak from a prerendered instance. Subscribing
-        // here also keeps the first render off any I/O.
         if (firstRender)
         {
             Bus.GalleryPhotoAdded += OnPhotoAdded;
@@ -142,7 +131,7 @@
         }
     }
 
-    // Live-prepend auto-captured photos (e.g. surprise spikes) as they arrive.
+	// 자동 추가된 사진은 실시간으로 prepend하여 화면에 표시
     private void OnPhotoAdded(GalleryPhoto photo) => _ = InvokeAsync(() =>
     {
         if (_photos.All(p => p.Id != photo.Id))

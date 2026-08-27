@@ -6,11 +6,6 @@ using GamerBio.Models;
 
 namespace GamerBio.Services;
 
-/// <summary>
-/// Runs the Discord bot inside the same ASP.NET host as a hosted service, so it
-/// shares the <see cref="TensionAnalyzer"/> singleton with the web/SignalR side.
-/// Handles two flows: slash commands and outbound stress alerts.
-/// </summary>
 public class DiscordBotService : BackgroundService
 {
     private readonly DiscordSocketClient _client;
@@ -20,10 +15,8 @@ public class DiscordBotService : BackgroundService
     private readonly string _token;
     private readonly ulong _alertChannelId;
 
-    // Alerts are queued here instead of being sent inline, so that a slow (or
-    // rate-limited) Discord REST call never delays the HTTP response to the ESP32.
-    // Bounded + DropOldest means a stalled bot can't grow this without limit, and
-    // dropping a stale reading is harmless: the dedup below keys off the newest state.
+    // 알람은 ESP32에 대한 HTTP 응답을 지연시키지 않도록 인라인으로 전송되는 대신 대기열에 추가
+    // 정체된 봇이 이를 무제한으로 성장시키지 못하도록 함.
     private readonly Channel<TensionReading> _alerts =
         Channel.CreateBounded<TensionReading>(new BoundedChannelOptions(32)
         {
@@ -31,9 +24,7 @@ public class DiscordBotService : BackgroundService
             SingleReader = true,
         });
 
-    // Only fire an alert when the state actually changes, so we don't spam the
-    // channel on every biosignal sample. Touched only by the single drain loop,
-    // so it needs no synchronization.
+    // 알람은 상태가 실제로 변경될 때만 발생
     private TensionState _lastNotified = TensionState.Calibrating;
 
     public DiscordBotService(
@@ -68,14 +59,11 @@ public class DiscordBotService : BackgroundService
             return;
         }
 
-        // Discover slash-command modules in this assembly.
         await _interactions.AddModulesAsync(typeof(DiscordBotService).Assembly, _services);
 
         _client.Ready += async () =>
         {
-            // Global commands can take up to ~1h to propagate. For instant
-            // iteration during development, register to a single test guild
-            // instead via RegisterCommandsToGuildAsync(guildId).
+            // 디스코드 명령 등록 시간을 기다리지 않고 테스트
             await _interactions.RegisterCommandsGloballyAsync();
             _logger.LogInformation("Discord bot ready as {User}", _client.CurrentUser);
         };
@@ -89,7 +77,7 @@ public class DiscordBotService : BackgroundService
         await _client.LoginAsync(TokenType.Bot, _token);
         await _client.StartAsync();
 
-        // Drain queued alerts until the host shuts down, then log out cleanly.
+        // 알람을 처리하는 동안 봇이 종료되면 예외발생할 수 있으므로 무시하고 종료.
         try
         {
             await DrainAlertsAsync(stoppingToken);
@@ -105,17 +93,9 @@ public class DiscordBotService : BackgroundService
         }
     }
 
-    /// <summary>
-    /// Queue a stress alert. Returns immediately and never throws, so request
-    /// handlers can call it without tying their response time to Discord's API.
-    /// If the bot is disabled, queued readings are simply discarded.
-    /// </summary>
+    // 알람을 대기열에 추가. 봇이 종료되면 무시.
     public void NotifyTension(TensionReading tension) => _alerts.Writer.TryWrite(tension);
 
-    /// <summary>
-    /// Single consumer for <see cref="_alerts"/>. A failed send is logged and skipped;
-    /// it must never tear down the loop, or alerts would stop silently.
-    /// </summary>
     private async Task DrainAlertsAsync(CancellationToken stoppingToken)
     {
         await foreach (var tension in _alerts.Reader.ReadAllAsync(stoppingToken))
@@ -131,10 +111,6 @@ public class DiscordBotService : BackgroundService
         }
     }
 
-    /// <summary>
-    /// Push a stress alert to the configured channel, but only on a transition
-    /// into the Stressed or Deadly state (deduplicated against the last notified state).
-    /// </summary>
     private async Task SendAlertAsync(TensionReading tension)
     {
         if (tension.State == _lastNotified)

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$RemoteHost = 'tjdgus@192.168.0.104',
+    [string]$RemoteHost = 'tjdgus@172.30.1.7',
     [string]$RemotePath = '/opt/gamerbio',
     [string]$ServiceName = 'gamerbio.service',
     [string]$Project = (Join-Path $PSScriptRoot 'GamerBio\GamerBio.csproj'),

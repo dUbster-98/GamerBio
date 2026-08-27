@@ -4,11 +4,6 @@ using Microsoft.Extensions.Configuration;
 
 namespace GamerBio.Services;
 
-/// <summary>
-/// Slash-command handlers. Each command instance is created per-interaction by
-/// Discord.Net's DI, so the singleton <see cref="TensionAnalyzer"/> is injected
-/// straight in and we read its latest fused state on demand.
-/// </summary>
 public class DiscordCommands : InteractionModuleBase<SocketInteractionContext>
 {
     // Public site base used to link the news page (defaults to the fixed public

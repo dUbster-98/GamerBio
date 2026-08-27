@@ -2,15 +2,9 @@ using GamerBio.Models;
 
 namespace GamerBio.Services;
 
-/// <summary>
-/// Owns the on-disk location of gallery image files. Files are kept outside
-/// wwwroot so they survive (when pointed at a path outside the deploy dir) and
-/// are never directly browsable — they are served through a guarded endpoint.
-/// Configure <c>Gallery:StoragePath</c>; defaults to a folder under ContentRoot.
-/// </summary>
+/// 파이의 내부 스토리지에 사진을 저장하고, 외부에서 직접 접근할 수 없도록 보호
 public class GalleryStorage
 {
-    // Extensions we accept. Maps to the content-type stored with each photo.
     private static readonly Dictionary<string, string> AllowedTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         [".jpg"] = "image/jpeg",
@@ -42,7 +36,6 @@ public class GalleryStorage
 
     public string PathFor(GalleryPhoto photo) => Path.Combine(_root, photo.StoredName);
 
-    /// <summary>Writes the upload stream to disk and returns the random storage name.</summary>
     public async Task<string> SaveAsync(string originalName, Stream content, CancellationToken ct)
     {
         var ext = Path.GetExtension(originalName);
@@ -56,7 +49,6 @@ public class GalleryStorage
         return storedName;
     }
 
-    /// <summary>Writes raw bytes (e.g. an auto-captured JPEG) and returns the storage name.</summary>
     public async Task<string> SaveBytesAsync(byte[] data, string ext, CancellationToken ct)
     {
         var storedName = $"{Guid.NewGuid():N}{ext.ToLowerInvariant()}";

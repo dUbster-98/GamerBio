@@ -2,19 +2,11 @@ using System.Globalization;
 
 namespace GamerBio.Services;
 
-/// <summary>
-/// Reads the daily news HTML files produced by the RPi's evening scheduler.
-/// Files live in a configured folder (<c>News:StoragePath</c>) and are named
-/// <c>yyyy-MM-dd.html</c>. Like <see cref="GalleryStorage"/> the folder is kept
-/// outside wwwroot: dates are validated and files are streamed through a guarded
-/// endpoint so the storage path stays server-side and nothing is directly
-/// browsable (no path traversal — only well-formed dates resolve to a file).
-/// </summary>
+// 스케줄러가 생성한 일일 뉴스 HTML 파일을 읽음.
 public class NewsStorage
 {
     public const string DateFormat = "yyyy-MM-dd";
 
-    // A day's news article is HTML text — generous cap to reject junk/oversized bodies.
     public const long MaxFileBytes = 10 * 1024 * 1024; // 10 MB per day
 
     private readonly string _root;
@@ -32,7 +24,6 @@ public class NewsStorage
         _logger.LogInformation("News files read from {Root}", _root);
     }
 
-    /// <summary>Available news dates, newest first (parsed from file names).</summary>
     public IReadOnlyList<DateOnly> AvailableDates()
     {
         if (!Directory.Exists(_root))
@@ -56,11 +47,7 @@ public class NewsStorage
         return dates;
     }
 
-    /// <summary>
-    /// Resolves the on-disk path for a validated date, or null if the date is
-    /// malformed or the file is missing. Re-formatting the parsed date (rather
-    /// than trusting the raw string) keeps traversal characters out of the path.
-    /// </summary>
+    // 파일이름은 항상 yyyy-MM-dd.html형식이어야 하며 잘못된 날짜 문자열은 null을 반환
     public string? PathFor(string date)
     {
         if (!DateOnly.TryParseExact(date, DateFormat, CultureInfo.InvariantCulture,
@@ -74,12 +61,6 @@ public class NewsStorage
         return File.Exists(path) ? path : null;
     }
 
-    /// <summary>
-    /// Writes a day's news HTML to disk, overwriting any existing file for that
-    /// date. The date is re-formatted from the parsed value (never the raw
-    /// string) so traversal characters can't reach the path. Returns the
-    /// canonical <c>yyyy-MM-dd</c> key, or null if the date is malformed.
-    /// </summary>
     public async Task<string?> SaveHtmlAsync(string date, byte[] html, CancellationToken ct)
     {
         if (!DateOnly.TryParseExact(date, DateFormat, CultureInfo.InvariantCulture,

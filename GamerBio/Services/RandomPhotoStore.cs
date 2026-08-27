@@ -1,12 +1,7 @@
 namespace GamerBio.Services;
 
-/// <summary>
-/// A dedicated folder of curated images, separate from the user gallery
-/// (<c>Gallery:StoragePath</c>). The Discord bot picks one at random from here.
-/// Unlike the gallery there is no DB metadata — images are just dropped into the
-/// folder and the bot reads them directly. Configure <c>RandomGallery:StoragePath</c>;
-/// defaults to a folder under ContentRoot.
-/// </summary>
+/// 랜덤 사진을 저장하는 전용 폴더. 사용자 갤러리와는 별도로 관리되며,
+/// Discord 봇이 RandomGallery:StoragePath 무작위로 하나를 선택한다.
 public class RandomPhotoStore
 {
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -29,7 +24,6 @@ public class RandomPhotoStore
         _logger.LogInformation("Random photo store at {Root}", _root);
     }
 
-    /// <summary>Returns a random image file path from the store, or null if empty.</summary>
     public string? PickRandom()
     {
         var files = Directory.EnumerateFiles(_root)

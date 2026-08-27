@@ -94,39 +94,37 @@
     private const int MaxRows = 500;
     private const string StateKey = "deadly.events";
 
-    // All loaded events (newest first). Deadly entries are rare, so we hold the
-    // full set client-side and filter by date in memory rather than re-querying.
+	// 이벤트 전체를 메모리에 보관하고 날짜별로 필터링하여 다시 쿼리하지 않음
     private readonly List<DeadlyEvent> _all = new();
     private DateOnly? _selectedDate;   // null = show everything
+									   // 상태 유지용으로 보관하고 Dispose 시 해제
     private PersistingComponentStateSubscription _persistSub;
     private bool _initialized;
     private bool _subscribed;
 
-    // Distinct local dates that have events, newest first (for the filter chips).
+	// 날짜별로 필터링 하기 위한 날짜 목록 (중복 제거, 내림차순 정렬)
     private IReadOnlyList<DateOnly> _dates = Array.Empty<DateOnly>();
 
-    // Events matching the current date filter (or all when no date is selected).
+	// 현재 선택된 날짜 필터에 맞는 이벤트 (날짜 선택이 없으면 전체)
     private List<DeadlyEvent> Displayed =>
         _selectedDate is DateOnly d
             ? _all.Where(e => LocalDate(e) == d).ToList()
             : _all;
 
-    // Loaded before the first render (not in OnInitializedAsync): an async
-    // OnInitializedAsync renders once with an empty list as soon as it awaits,
-    // wiping the prerendered rows until the query comes back. See Gallery.razor
-    // for the same pattern.
+	// 렌더링  전에 데이터를 로드하고, OnInitializedAsync에서 비동기적으로 데이터를 가져오면 
+    // 첫 렌더링 시 빈 목록으로 렌더링되어 미리 렌더링된 행이 사라지므로 이 패턴을 사용함
+    // 갤러리도 같은 패턴을 사용함
     public override async Task SetParametersAsync(ParameterView parameters)
     {
-        // ParameterView can only be read synchronously, so apply it before the
-        // first await and hand base an empty one afterwards.
+		// 파라미터를 동기적으로만 읽을 수 있으므로 첫 await 전에 적용하고 이후 빈 ParameterView를 전달함
         parameters.SetParameterProperties(this);
 
         if (!_initialized)
         {
             _initialized = true;
 
-            // Carry the prerendered rows into the interactive pass so a direct
-            // page load doesn't query twice.
+			// 렌더링 전에 이미 서버에서 데이터를 가져왔으면 그대로 사용하고, 없으면 다시 쿼리함
+            // 두번 쿼리 방지
             _persistSub = AppState.RegisterOnPersisting(() =>
             {
                 AppState.PersistAsJson(StateKey, _all);
@@ -149,8 +147,7 @@
 
     protected override void OnAfterRender(bool firstRender)
     {
-        // Interactive pass only — a prerendered instance never gets here, so the
-        // subscription can't outlive a render that has no Dispose partner.
+		// 구독은 Dispose 시 해제해야 하므로 firstRender에서만 구독함
         if (firstRender)
         {
             Bus.DeadlyEventRecorded += OnDeadlyEvent;
@@ -158,7 +155,7 @@
         }
     }
 
-    // Live-prepend Deadly entries as the server records them.
+	// 라이브로 기록된 이벤트를 실시간으로 화면에 추가함
     private void OnDeadlyEvent(DeadlyEvent e) => _ = InvokeAsync(() =>
     {
         if (_all.All(x => x.Id != e.Id))
@@ -191,7 +188,7 @@
             .OrderDescending()
             .ToList();
 
-    // Group by the same local date shown on each row (OccurredAt is stored UTC).
+	// 그룹핑은 각 행에 표시되는 동일한 로컬 날짜를 기준으로 수행됨 (OccurredAt은 UTC로 저장됨).
     private static DateOnly LocalDate(DeadlyEvent e) =>
         DateOnly.FromDateTime(e.OccurredAt.LocalDateTime);
 

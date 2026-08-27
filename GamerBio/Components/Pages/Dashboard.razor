@@ -192,21 +192,22 @@
 @code {
     private const int MaxRecent = 20;
 
-    // The wearable posts every 2s; treat the stream as dead once nothing has
-    // arrived for this long. (The page itself is always "connected" now that it
-    // reads events in-process, so the pill reports data freshness instead.)
+    // 웨어러블 기기에서 2s단위로 수신, 페이지는 항상 연결된것으로 간주
+    // 10초동안 데이터 안들어오면 죽음
     private static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(10);
 
     private BioSignal? _latest;
     private TensionReading? _tension;
     private EmotionReading? _emotion;
+
+	// 데이터의 삽입과 삭제가 리스트 맨 앞 혹은 끝에서만 발생하니 LinkedList가 적합하다.
     private readonly LinkedList<BioSignal> _recent = new();
 
     private bool _live;
     private bool _subscribed;
     private CancellationTokenSource? _staleWatch;
 
-    // PC MJPEG stream URL (e.g. http://192.168.0.50:8080). Null when unconfigured.
+	// CamURL은 Pi 내부 appsettings.json.Production에서 가져오며, 없으면 null로 처리한다.
     private string? _camUrl;
 
     // Drive the heartbeat animation speed from the live BPM (seconds per beat).
@@ -233,6 +234,7 @@
             return;
         }
 
+        // 시그널 이벤트 구독
         Bus.BioSignalReceived += OnBioSignal;
         Bus.TensionUpdated += OnTension;
         Bus.EmotionUpdated += OnEmotion;
@@ -266,8 +268,7 @@
         StateHasChanged();
     });
 
-    // Nothing pushes an event when packets *stop*, so poll for the gap. Only
-    // re-renders on the transition, not on every tick.
+	// 패킷 이벤트가 멈췄을 때 억지로 화면을 갱신하지 않고 상태가 바뀔 때만 갱신하도록 한다.
     private async Task WatchStalenessAsync(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
