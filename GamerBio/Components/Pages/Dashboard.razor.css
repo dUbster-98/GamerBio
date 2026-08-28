@@ -269,9 +269,11 @@
 /* ---- vitals -------------------------------------------------- */
 .vitals {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 1.1rem;
 }
+/* 5칸이 좁아지기 시작하는 지점에서 3칸으로 접는다 (4칸은 5개 항목이 1+4로 갈라져 어색하다) */
+@media (max-width: 1100px) { .vitals { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 920px) { .vitals { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 520px) { .vitals { grid-template-columns: 1fr; } }
 
@@ -281,6 +283,7 @@
 }
 .v-heart { --c: var(--heart); }
 .v-gsr   { --c: var(--gsr); }
+.v-pi    { --c: var(--pi); }
 .v-temp  { --c: var(--temp); }
 .v-time  { --c: var(--accent); }
 
@@ -374,4 +377,5 @@
 .t-time  { color: var(--muted); }
 .t-heart { color: var(--heart); }
 .t-gsr   { color: var(--gsr); }
+.t-pi    { color: var(--pi); }
 .t-temp  { color: var(--temp); }

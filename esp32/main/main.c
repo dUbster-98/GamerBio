@@ -167,9 +167,19 @@ static int gsr_read(void)
  *     이 프로젝트는 임베디드 포트폴리오이고 "데이터시트 보고 드라이버를 직접 쓴다"가
  *     어필 포인트이므로 직접 구현한다.
  *   · 다만 algorithm.cpp의 maxim_heart_rate_and_oxygen_saturation()에는
- *     **SpO2(산소포화도) 계산식**이 들어 있다. 우리 코드는 BPM만 내므로,
- *     나중에 SpO2로 확장할 때는 그 알고리즘을 참고할 것.
+ *     **SpO2(산소포화도) 계산식**이 들어 있다. 우리 코드는 BPM과 PI만 낸다.
  *     (RED LED를 이미 켜 두고 있어서 데이터는 지금도 나오고 있다 — 아래 MODE_SPO2 참고)
+ *
+ * ※ SpO2를 스트레스 지표로 쓰지 않기로 한 이유 (RED 채널을 켜 두고도 안 쓰는 이유):
+ *   · 건강한 사람이 게임하는 동안 SpO2는 96~99%에 갇혀 있고 스트레스로 움직이는 폭이
+ *     1%p 수준인데, 반사형 손가락 측정의 실측 오차가 ±2~3%p다 → 신호가 노이즈보다 작다.
+ *   · 스트레스 → 호흡수 증가라서 SpO2는 떨어지는 게 아니라 유지/미세상승한다.
+ *     "높을수록 평온"같은 단조 관계가 없어 0~100 점수로 매핑할 근거 자체가 없다.
+ *   · SpO2 = f(R)의 f는 임상 캘리브레이션으로 뽑은 경험식이라 저산소 피험자 없이는 검증 불가.
+ *   대신 같은 IR 파형에서 **PI(관류 지수)**를 뽑는다 — 아래 ppg_feed ⑤ 참고.
+ *   교감신경 각성 → 말초 혈관 수축 → 맥파 진폭 감소로 방향이 단조롭고, 상대값이라
+ *   절대 캘리브레이션이 필요 없으며, GSR(땀샘)과 같은 축을 다른 물리량(혈관)으로 재므로
+ *   융합에서 실제로 독립적인 기여를 한다.
  *
  * 주소와 비트 배치는 우리가 정하는 게 아니라 **칩 제조사 데이터시트에 박혀 있는 값**이다.
  * (MAX30102 datasheet, Maxim Integrated — "Register Map" 절)
@@ -327,11 +337,11 @@ static void max30102_init(void)
     //   숫자를 2진수로 펴서 구간별로 잘라 읽어야 의미가 보인다.
 
     // FIFO_CONFIG(0x08) = 0x30 = 0b 001 1 0000
-    //                              └┬┘ │ └┬─┘
-    //   [7:5] SMP_AVE   = 0b001  ──┘   │  │   센서가 2샘플을 평균내서 1샘플로 넣는다
-    //                                  │  │   (내부 100Hz ÷ 2 = 우리가 받는 50Hz. 잡음도 줄어든다)
-    //   [4]   ROLLOVER_EN = 1  ────────┘  │   가득 차면 오래된 것부터 덮어쓴다
-    //   [3:0] A_FULL    = 0b0000 ─────────┘   "거의 참" 인터럽트 미사용(우리는 폴링하므로)
+    //                               └┬┘ │ └┬─┘
+    //   [7:5] SMP_AVE   = 0b001    ──┘  │  │   센서가 2샘플을 평균내서 1샘플로 넣는다
+    //                                   │  │   (내부 100Hz ÷ 2 = 우리가 받는 50Hz. 잡음도 줄어든다)
+    //   [4]   ROLLOVER_EN = 1   ────────┘  │   가득 차면 오래된 것부터 덮어쓴다
+    //   [3:0] A_FULL    = 0b0000  ─────────┘   "거의 참" 인터럽트 미사용(우리는 폴링하므로)
     // ROLLOVER_EN을 켜 두면 FIFO가 가득 차도 멈추지 않고 오래된 것부터 덮어쓴다.
     // (끄면 가득 찬 순간 수집이 멈춰서, 폴링이 한 번만 늦어도 신호가 영영 끊긴다)
     MAX_WR(REG_FIFO_CONFIG, 0x30);
@@ -357,12 +367,47 @@ static void max30102_init(void)
 }
 
 /* ===== MAX30102 FIFO 읽기 =====
- * 이전 구현은 2초에 한 번 FIFO_DATA에서 6바이트만 꺼냈다. 그런데 FIFO는 초당 50샘플이
- * 쌓이고 깊이는 32칸뿐이라, 읽는 값은 "언제 기록됐는지 알 수 없는 위치"의 데이터였다.
- * 센서가 살아있는지 확인하는 용도로는 됐지만 파형이 아니라서 박동 검출이 불가능했다.
  *
- * 정석은 WR/RD 포인터로 쌓인 개수를 구해 그만큼 한 번에 꺼내는 것이다.
- * FIFO_DATA를 연속으로 읽으면 RD_PTR이 샘플마다 자동으로 증가한다.
+ * ▸ FIFO란: 센서가 측정한 샘플을 **칩 안의 32칸짜리 링버퍼(ring buffer)** 에 알아서
+ *   쌓아두는 공간이다. FIFO = First In, First Out (먼저 넣은 게 먼저 나온다).
+ *
+ *   이게 없다면 ESP32는 20ms(50Hz)마다 정확히 깨어나 한 샘플씩 받아가야 한다.
+ *   WiFi 전송이나 다른 태스크 때문에 한 번이라도 늦으면 그 샘플은 영영 사라진다.
+ *   FIFO 덕분에 우리는 **100ms에 한 번만 들러서 그동안 쌓인 5개를 몰아서** 퍼가면 된다.
+ *   (아래 ppg_task의 PPG_POLL_MS=100이 그 주기다)
+ *
+ * ▸ "링"버퍼인 이유: 32칸을 일렬로 쓰다가 끝에 도달하면 다시 0번 칸으로 돌아온다.
+ *   즉 칸 번호가 31 다음에 32가 아니라 0이다 (원형으로 이어져 있다고 보면 된다).
+ *   덕분에 데이터를 앞으로 밀어 옮기는 복사 없이 무한히 쓸 수 있다.
+ *
+ * ▸ 포인터 2개로 위치를 추적한다:
+ *       WR_PTR(0x04) — **센서**가 다음에 쓸 칸 번호 (샘플이 생길 때마다 센서가 +1)
+ *       RD_PTR(0x06) — **우리**가 다음에 읽을 칸 번호 (FIFO_DATA를 읽으면 자동 +1)
+ *
+ *   칸:  0   1   2   3   4   5  ...  31
+ *      [old][ ][ ][A ][B ][C ][ ]...[  ]
+ *                  ▲           ▲
+ *                  RD=3        WR=6      → 쌓인 개수 = 6 - 3 = 3 (A,B,C)
+ *
+ *   우리가 3개를 다 읽으면 RD가 6이 되어 WR과 같아진다 = 비어 있음.
+ *   → 쌓인 개수 = WR - RD (음수면 한 바퀴 돈 것이므로 +32)
+ *
+ * ▸ 왜 OVF_COUNTER(0x05)라는 칸이 따로 있나:
+ *   링버퍼의 고전적 함정 때문이다. WR == RD는 "완전히 빔"인데, **정확히 꽉 참**도
+ *   똑같이 WR == RD가 된다(32칸을 다 쓰고 제자리로 돌아오므로). 포인터만으로는
+ *   이 둘을 구분할 방법이 없다. 그래서 하드웨어가 덮어쓴 샘플 수를 따로 세어 준다.
+ *   OVF > 0 이면 "우리가 늦어서 못 읽은 샘플이 버려졌다"는 뜻이다.
+ *
+ * ▸ 넘치면 왜 곤란한가: 우리는 **샘플 개수로 시간을 재기 때문**이다(아래 ppg_feed 참고).
+ *   샘플이 몇 개 버려졌는지 몰라도 파형 자체는 이어 붙여지므로, 없는 시간이
+ *   사라진 채 연결되어 IBI(박동 간격)가 짧게 계산된다 = 가짜 고심박.
+ *   그래서 *gap=true로 알려 박동 검출기를 리셋시킨다.
+ *   (여유는 충분하다: 32칸 ÷ 50Hz = 640ms만에 차는데 100ms마다 비우므로 6배 여유)
+ *
+ * ▸ 참고 — 이전 구현의 실패: 2초에 한 번 FIFO_DATA에서 6바이트만 꺼냈다. 그런데 FIFO는
+ *   초당 50샘플이 쌓이고 깊이는 32칸뿐이라, 읽는 값은 "언제 기록됐는지 알 수 없는
+ *   위치"의 데이터였다. 센서가 살아있는지 확인하는 용도로는 됐지만 파형이 아니라서
+ *   박동 검출이 불가능했다. 정석은 지금처럼 포인터로 개수를 구해 몰아서 꺼내는 것이다.
  */
 
 // 지금 FIFO에 쌓인 샘플 수. 실패하면 -1.
@@ -370,17 +415,25 @@ static void max30102_init(void)
 static int max30102_available(bool *gap)
 {
     // 0x04(WR_PTR) / 0x05(OVF_COUNTER) / 0x06(RD_PTR)은 연속 주소라 한 번에 읽을 수 있다.
+    // I2C 트랜잭션 3번이 1번이 된다 — 게다가 셋을 따로 읽으면 그 사이에 센서가 샘플을
+    // 하나 더 넣어 WR과 RD가 서로 다른 시점의 값이 되는 문제도 있다(찢어진 읽기).
     uint8_t p[3];
     if (max_read(REG_FIFO_WR_PTR, p, sizeof(p)) != ESP_OK) return -1;
 
+    // & 0x1F = 하위 5비트만 남긴다. 칸이 32개(0~31)라 포인터는 5비트면 충분하고,
+    // 상위 3비트는 데이터시트상 예약(reserved) 영역이라 값이 보장되지 않는다.
+    // 쓰레기 비트가 섞이면 wr이 32 이상으로 읽혀 아래 뺄셈이 엉망이 된다.
     uint8_t wr = p[0] & 0x1F, ovf = p[1] & 0x1F, rd = p[2] & 0x1F;
     *gap = (ovf > 0);
 
     if (ovf > 0) {
         // 넘쳤다 = 읽기 전에 덮어쓴 샘플이 있다. 남아 있는 32칸은 서로 연속이지만
         // 그 앞과는 이어지지 않으므로, 전부 꺼내되 박동 연속성은 끊어야 한다.
+        // (WR==RD가 되어 있어 뺄셈으로는 0이 나온다. 그래서 여기서 일찍 빠져나간다)
         return MAX_FIFO_DEPTH;
     }
+    // 예: wr=3, rd=30 → 30,31,0,1,2 를 읽어야 하므로 5개.
+    //     3 - 30 = -27 이고 -27 + 32 = 5. 맞는다.
     int n = (int)wr - (int)rd;
     if (n < 0) n += MAX_FIFO_DEPTH;   // 링버퍼가 한 바퀴 돈 경우
     return n;
@@ -429,6 +482,16 @@ static int max30102_drain(uint32_t *out, bool *gap)
 #define PPG_IBI_SLOTS      5        // 중앙값을 낼 IBI 개수
 #define PPG_STALE_MS       5000     // 이만큼 박동이 없으면 그동안의 IBI를 버린다
 
+// --- PI(관류 지수) 전용 상수 ---
+// PI를 내려면 AC(맥동 진폭)와 **DC(원시 IR 평균)**가 둘 다 필요한데, 위 하이패스는 DC를
+// 버리는 게 목적이라 DC가 남아 있지 않다. 그래서 원시 IR의 느린 EMA를 따로 하나 더 둔다.
+// ppg_task의 ir_dc(계수 1/16 → 차단 ≈0.5Hz)를 재활용하지 않는 이유: 그건 손가락 감지용이라
+// 차단이 맥박(1~2Hz)에 너무 가까워 맥동이 DC 추정에 그대로 실린다(= PI가 박동마다 출렁인다).
+#define PPG_DC_LP_ALPHA    (1.0f / 64.0f)         // 차단 ≈ 0.12Hz, 시정수 ≈ 1.3초
+#define PPG_PI_SMOOTH      0.25f                  // PI 출력 EMA. **박동당 1회** 갱신이라 τ ≈ 4박 ≈ 3초
+#define PPG_PI_WARMUP      (PPG_SAMPLE_RATE * 3)  // 필터가 수렴할 때까지는 PI를 내지 않는다
+#define PPG_PI_MAX         25.0f                  // 임상 PI 상한(0.02~20%) 밖 = 모션 아티팩트로 보고 버린다
+
 typedef struct {
     float    dc_w;                  // 하이패스 상태 변수
     float    ma[PPG_MA_LEN];        // 이동평균 링버퍼
@@ -441,6 +504,11 @@ typedef struct {
     uint32_t last_beat_idx;         // 마지막 박동의 샘플 인덱스 (0 = 아직 없음)
     int      ibi[PPG_IBI_SLOTS];
     int      ibi_count, ibi_idx;
+    float    dc_slow;               // 원시 IR의 느린 평균 = PI의 분모(DC 성분)
+    float    beat_max, beat_min;    // 현재 박동 구간의 파형 최대/최소 (PI의 분자 = 이 차이)
+    bool     beat_window;           // 박동 구간이 열려 있는가 (= 첫 상승교차를 지났는가)
+    float    pi;                    // 평활화된 관류 지수 [%]. pi_valid가 false면 의미 없음
+    bool     pi_valid;
 } ppg_t;
 
 // 필터/검출 상태를 전부 버린다. 손가락을 뗐거나 FIFO가 넘쳐 신호가 끊겼을 때 호출.
@@ -449,24 +517,97 @@ static void ppg_reset(ppg_t *p)
     memset(p, 0, sizeof(*p));
 }
 
-// 한 샘플을 파이프라인에 흘려 넣는다. 박동이 검출되면 true.
+/* 한 샘플을 파이프라인에 흘려 넣는다. 박동이 검출되면 true.
+ *
+ * ▸ 왜 "한 샘플씩"인가 (스트리밍 처리):
+ *   파형 분석이라고 하면 보통 "몇 초치를 배열에 모아두고 한꺼번에 계산"을 떠올리지만,
+ *   여기서는 샘플이 도착할 때마다 즉시 처리하고 버린다. 이유는 두 가지다.
+ *     ① 메모리 — 10초치를 들고 있으려면 500샘플 × 4바이트 = 2KB인데,
+ *        이 방식은 ppg_t 구조체 하나(약 100바이트)면 끝난다.
+ *     ② 지연 — 모아서 처리하면 결과가 항상 그 구간만큼 늦게 나온다.
+ *   대신 **과거를 기억하는 일은 전부 ppg_t에 저장된 상태 변수가 대신한다.**
+ *   그래서 이 함수는 순수 함수가 아니라 호출될 때마다 p를 갱신하는 상태 기계다.
+ *   (이 구조 때문에 신호가 끊기면 ppg_reset()으로 상태를 통째로 버려야 한다)
+ *
+ * ▸ 단계 ⓪~⑤가 아래 순서로 이어진다. 각 단계에 왜 그게 필요한지 적어 두었다:
+ *     ⓪ DC 보존   — PI의 분모로 쓸 원시 평균을 하이패스 전에 챙긴다
+ *     ① DC 제거   — 수만 카운트의 배경을 걷어내 맥동만 남긴다
+ *     ② 저역통과  — 광원 잡음 제거
+ *     ③ 포락선    — 신호 크기가 변해도 따라가는 적응 임계값
+ *     ④ 박동 검출 — 임계값 상승 교차 → IBI 기록
+ *     ⑤ PI 계산   — 박동 구간의 진폭 ÷ DC
+ *
+ * ▸ 중간에 `return false`가 세 번 나온다(②의 버퍼 채우기, ③의 초기화).
+ *   전부 "아직 준비가 안 됐다"는 뜻이고, false = 이번 샘플에서 박동 없음이다.
+ *   실패가 아니므로 호출부는 그냥 다음 샘플을 넣으면 된다.
+ */
 static bool ppg_feed(ppg_t *p, uint32_t ir)
 {
+    // 시간축. 실제 시각이 아니라 **몇 번째 샘플인가**를 센다.
+    // FIFO가 정확히 1/50초 간격으로 채워지므로 인덱스 차 × 20ms = 경과 시간이다.
+    // (자세한 이유는 위 "===== PPG(IR 파형) → BPM =====" 블록 참고)
     p->idx++;
+
+    // ⓪ PI의 분모가 될 DC를 **하이패스에 들어가기 전에** 따로 챙겨 둔다.
+    //    아래 ①이 DC를 지워 버리므로 여기서 안 잡으면 되살릴 방법이 없다.
+    p->dc_slow = (p->dc_slow > 0.0f)
+               ? p->dc_slow + ((float)ir - p->dc_slow) * PPG_DC_LP_ALPHA
+               : (float)ir;   // 첫 샘플로 바로 초기화 — 0에서 수렴시키면 몇 초를 버린다
 
     // ① DC 제거.  w[n] = x[n] + α·w[n-1],  y[n] = w[n] - w[n-1]
     // PPG는 수만 카운트의 DC 위에 수백 카운트의 맥동이 얹힌 신호라, DC를 먼저
     // 걷어내지 않으면 임계값을 잡을 수가 없다(손가락 압력만 바뀌어도 DC가 통째로 움직인다).
+    //
+    // 왜 이 두 줄이 하이패스(고주파 통과 = 저주파 차단)인가:
+    //   · 앞줄 w는 **누적기**다. α=0.95라 과거를 20샘플쯤 기억하며 쌓는다(적분에 가깝다).
+    //   · 뒷줄 y는 그 누적기의 **변화량**이다(차분 = 미분에 가깝다).
+    //   입력이 변하지 않는 상수(=DC)라면 w도 상수로 수렴하므로 변화량 y는 0이 된다.
+    //   반대로 빠르게 출렁이는 성분은 w가 못 따라가 그 차이가 고스란히 y로 나온다.
+    //   → DC는 0으로 죽고 맥동만 살아남는다. 그래서 "DC 블로커"라고도 부른다.
+    //
+    // α가 차단 주파수를 정한다. 시정수 τ = 1/(1-α) = 20샘플 = 0.4초,
+    // 차단 ≈ (1-α)/2π × 50Hz ≈ 0.4Hz(=24bpm). 심박(1~3Hz)보다 충분히 아래라 맥동은 안전하고,
+    // 그보다 느린 손가락 압력 변화·체온 드리프트는 걸러진다.
+    // α를 1에 더 붙이면(0.99) 차단이 낮아져 더 안전하지만 기동과 회복이 느려진다.
+    //
+    // IIR(무한 임펄스 응답)이라 부르는 이유는 w가 자기 자신을 되먹임하기 때문이다.
+    // 과거 샘플을 배열로 들고 있지 않아도 float 하나(dc_w)로 "기억"이 된다 — 임베디드에
+    // 적합한 이유가 이것이다. 대신 상태가 남으므로 아래처럼 초기값을 신경 써야 한다.
+    //
+    // 상태변수를 **정상상태 값으로 초기화**하고 시작한다. 상수 입력 x에 대한 정상상태는
+    // w = x + α·w  →  w = x/(1-α) 이므로, 여기서 출발하면 y[0] = 0 이 된다.
+    // 0에서 시작하면 y[0] = ir(수만 카운트)이라는 가짜 스텝이 생기고, 더 나쁜 건 ③의
+    // 포락선이 그 값으로 primed된 뒤 1%/샘플로만 수축한다는 점이다 — 실제 진폭까지
+    // 내려오는 데 수백 샘플이 걸려서 첫 BPM이 10초, 첫 PI가 8.4초 뒤에야 나왔다.
+    // 이 한 줄로 첫 BPM 1.8~4.7초 / 첫 PI 3.0~3.5초가 된다(심박·DC에 따라, 합성 신호 실측).
+    // 수렴한 뒤의 BPM·PI 값 자체는 초기화 유무와 무관하게 동일하다 — 기동 구간만 바뀐다.
+    if (p->idx == 1) p->dc_w = (float)ir / (1.0f - PPG_DC_ALPHA);
+
     float w = (float)ir + PPG_DC_ALPHA * p->dc_w;
     float y = w - p->dc_w;
     p->dc_w = w;
 
     // ② 이동평균 저역통과. 광원 잡음과 양자화 지터를 없앤다.
-    p->ma_sum -= p->ma[p->ma_idx];
-    p->ma[p->ma_idx] = y;
+    //    ①이 "느린 것"을 걸렀다면 여기는 "너무 빠른 것"을 거른다. 둘을 합치면
+    //    0.4Hz ~ 4.4Hz만 남는 대역통과가 되고, 심박(1~3Hz)이 정확히 그 안에 있다.
+    //
+    //    구현이 5줄인 이유 — **매번 5개를 더하지 않기 위해서다.**
+    //    소박하게 짜면 샘플마다 5번 더해야 하지만(O(N)), 창이 한 칸 옮겨갈 때
+    //    실제로 바뀌는 건 "빠지는 값 하나, 들어오는 값 하나"뿐이다. 그래서
+    //      합계에서 나갈 값을 빼고 → 그 자리에 새 값을 덮어쓰고 → 합계에 더한다
+    //    로 덧셈 2번이면 끝난다(O(1)). 링버퍼라 ma_idx가 5에서 0으로 되돌아간다(% 연산).
+    //    탭 수를 늘려도 비용이 그대로라, 50Hz × 3센서를 도는 MCU에서 의미가 있다.
+    //
+    //    ⚠️ 부동소수점 누적 오차: 뺐다 더했다를 무한히 반복하면 이론상 ma_sum에 오차가
+    //       쌓인다. float 정밀도(약 7자리)에 비해 여기 값은 작고, 손가락을 뗄 때마다
+    //       ppg_reset()으로 0에서 다시 시작하므로 실사용에선 문제되지 않는다.
+    p->ma_sum -= p->ma[p->ma_idx];       // 창에서 나가는 가장 오래된 값
+    p->ma[p->ma_idx] = y;                // 그 자리에 새 값을 덮어쓴다
     p->ma_sum += y;
     p->ma_idx = (p->ma_idx + 1) % PPG_MA_LEN;
     if (p->ma_count < PPG_MA_LEN) {      // 버퍼가 찰 때까지는 출력이 의미 없다
+        // 아직 5개가 안 모였다. 지금 나누면 0으로 채워진 빈 칸까지 평균에 들어가
+        // 실제보다 작은 값이 나온다 → 그 4샘플(80ms)은 그냥 버린다.
         p->ma_count++;
         return false;
     }
@@ -479,21 +620,65 @@ static bool ppg_feed(ppg_t *p, uint32_t ir)
         p->primed = true;
         return false;
     }
+    // 갱신이 **비대칭**이다. 이게 포락선(envelope)의 핵심이다:
+    //   · 새 값이 기록을 깨면(s > env_max) → 즉시 그 값으로 점프한다 (빠른 attack)
+    //   · 아니면 → 현재값 쪽으로 1%씩만 다가간다 (느린 decay, τ=100샘플=2초)
+    // 대칭으로 만들면(그냥 평균) 신호를 따라다니느라 최대·최소가 서로 붙어버려
+    // 진폭이 0이 되고 임계값이 무의미해진다. 비대칭이라서 "최근 몇 초간의
+    // 최고점/최저점"을 기억하되 오래된 기록은 서서히 잊는 동작이 된다.
+    //
+    // `env += (s - env) * 0.01` 형태는 EMA(지수이동평균)의 표준형이다.
+    // "목표와의 차이만큼 1% 이동"이라 반복하면 지수적으로 수렴한다.
+    // 계수가 작을수록 느리고 안정적, 클수록 빠르고 민감하다.
+    // 이 파일에서 dc_slow(⓪)와 pi(⑤)도 같은 형태를 계수만 바꿔 쓴다.
     if (s > p->env_max) p->env_max = s; else p->env_max += (s - p->env_max) * PPG_ENV_DECAY;
     if (s < p->env_min) p->env_min = s; else p->env_min += (s - p->env_min) * PPG_ENV_DECAY;
 
+    // 임계값을 최대/최소의 **한가운데**(50%)에 둔다. 파형이 커지든 작아지든
+    // 포락선이 따라가므로 임계값도 같이 따라간다 = 적응 임계값.
+    // 고정값(예: "1000 넘으면 박동")을 쓰면 손가락을 조금만 다르게 눌러도 못 쓰게 된다.
     float amp = p->env_max - p->env_min;
     float threshold = p->env_min + amp * 0.5f;
+
+    // 현재 박동 구간의 **실제** 최대/최소를 따로 모은다. 포락선(env_*)을 재활용하지 않는 이유는
+    // 아래 ⑤ 참고 — 포락선은 임계값용이라 진폭 측정에 쓰면 체계적으로 작게 나온다.
+    if (p->beat_window) {
+        if (s > p->beat_max) p->beat_max = s;
+        if (s < p->beat_min) p->beat_min = s;
+    }
 
     // ④ 상승 교차 + 불응기.
     //    꼭대기가 아니라 **중간 지점을 올라가며 지나는 순간**을 박동으로 잡는다.
     //    맥파 꼭대기는 평평해서 샘플마다 위치가 흔들리는 반면 상승 구간은 기울기가 급해
     //    시각 지터가 작다 = IBI가 정확해진다.
+    //
+    // ⚠️ crossing과 beat는 다른 것이다. 아래에서 둘을 구분해 쓰므로 헷갈리지 말 것:
+    //     crossing = 파형이 임계값을 위로 지났다 (= 파형상의 사건)
+    //     beat     = 그 교차가 **말이 되는 간격**이라 IBI로 채택했다 (= 검증을 통과한 것)
+    //   첫 교차는 비교 대상이 없어 crossing이지만 beat가 아니고,
+    //   잡음으로 생긴 너무 짧은 교차도 crossing이지만 beat가 아니다.
+    //   PI(⑤)는 유효한 박동 구간이 필요하니 beat를 쓰고,
+    //   구간 경계 리셋은 파형 위치가 기준이니 crossing을 쓴다.
     bool beat = false;
-    if (amp >= PPG_MIN_AMPLITUDE && p->prev <= threshold && s > threshold) {
-        if (p->last_beat_idx != 0) {
+    // 상승 교차 판정 = 직전 샘플은 임계값 아래였는데(prev <= th) 지금은 위다(s > th).
+    // 두 샘플을 비교하는 이유: "지금 임계값보다 크다"만 보면 맥파 꼭대기에 머무는
+    // 동안 매 샘플이 다 검출되어 한 박동이 수십 번으로 세어진다. 넘어가는 **순간**의
+    // 한 샘플만 잡으려면 경계를 건너뛰었는지를 봐야 한다(에지 검출).
+    // amp 조건은 손가락이 없을 때 잡음이 임계값 근처에서 떠는 걸 막는 게이트다.
+    bool crossing = (amp >= PPG_MIN_AMPLITUDE && p->prev <= threshold && s > threshold);
+    if (crossing) {
+        if (p->last_beat_idx != 0) {     // 0 = 아직 기준점이 없다(첫 교차) → IBI를 낼 수 없다
+            // IBI(Inter-Beat Interval) = 박동 사이 간격.
+            // 샘플 인덱스 차 × (1000ms ÷ 50Hz) = 밀리초. 정수 나눗셈이지만 1000을 먼저
+            // 곱하므로 정밀도 손실이 없다(20ms 단위로 딱 떨어진다).
             int ibi_ms = (int)((p->idx - p->last_beat_idx) * 1000 / PPG_SAMPLE_RATE);
+            // 생리학적으로 불가능한 간격을 버린다. 이 하한이 곧 **불응기(refractory)** 역할을
+            // 한다 — 심장이 실제로 220bpm보다 빨리 뛸 수 없으므로, 273ms 안에 또 교차가
+            // 잡혔다면 그건 다음 박동이 아니라 같은 맥파의 잡음이나 이중맥박파(dicrotic notch,
+            // 대동맥판이 닫히며 생기는 작은 두 번째 봉우리)다.
             if (ibi_ms >= PPG_IBI_MIN_MS && ibi_ms <= PPG_IBI_MAX_MS) {
+                // 최근 5개만 유지하는 링버퍼. ②의 이동평균과 같은 구조인데,
+                // 여기선 합계가 아니라 중앙값을 낼 거라 값 자체를 들고 있는다(ppg_bpm 참고).
                 p->ibi[p->ibi_idx] = ibi_ms;
                 p->ibi_idx = (p->ibi_idx + 1) % PPG_IBI_SLOTS;
                 if (p->ibi_count < PPG_IBI_SLOTS) p->ibi_count++;
@@ -505,13 +690,63 @@ static bool ppg_feed(ppg_t *p, uint32_t ir)
         p->last_beat_idx = p->idx;
     }
 
+    // ⑤ 관류 지수 PI = AC ÷ DC × 100 [%].  방금 끝난 박동 구간 하나를 단위로 계산한다.
+    //    AC = 맥동의 peak-to-peak(= 심장이 밀어낸 혈액이 만드는 빛 흡수 변화),
+    //    DC = 조직·뼈·정맥혈이 만드는 일정한 흡수. 나누는 이유는 이 비율만이
+    //    LED 밝기·피부색·센서 밀착도 같은 개체차에 둔감하기 때문이다(AC 절대값은 전부 탄다).
+    //
+    //    스트레스 지표로서: 교감신경 각성 → 말초 혈관 수축 → 손끝에 도달하는 박동 혈류 감소
+    //    → AC 감소 → **PI 하락**. GSR(땀샘)과 같은 자율신경 축을 다른 물리량(혈관)으로 재므로
+    //    둘이 같이 움직이면 교차 검증이 되고, 한쪽만 움직이면 그쪽이 아티팩트라는 뜻이 된다.
+    //
+    //    ⚠️ 분자로 포락선 amp(= env_max - env_min)를 쓰면 안 된다. 포락선은 박동 사이에
+    //       서로를 향해 τ≈2초로 수축하므로(③) 다음 박동이 오기 전에 이미 주저앉는다 →
+    //       진폭이 체계적으로 작게 나오고, 그 편차가 **심박수에 따라 달라진다**.
+    //       합성 PPG 검증에서 포락선 방식은 참값 대비 -18.5%(50~140bpm 구간에서 -16~-25%로 변동),
+    //       구간 실측 방식은 -2.6%(같은 구간 -2.6~-10.8%)였다. 스트레스는 심박도 같이 올리므로
+    //       심박 의존 편차는 가짜 PI 변화로 읽힌다 — 이 차이가 이 코드가 존재하는 이유다.
+    //    ⚠️ 남은 -2.6%는 하이패스+이동평균 통과 손실이다. 절대값을 임상 PI(맥박산소측정기 표시값)와
+    //       비교하지 말고 개인 baseline 대비 변화율로만 쓸 것. 140bpm에서 -10.8%까지 벌어지는데,
+    //       이동평균 5탭이 고조파를 먹기 때문이다(실제 혈관수축은 50%+ 변화라 묻히는 수준).
+    if (beat && p->beat_window && p->idx >= (uint32_t)PPG_PI_WARMUP && p->dc_slow > 0.0f) {
+        float pp = p->beat_max - p->beat_min;
+        float raw_pi = pp / p->dc_slow * 100.0f;
+        // 범위 밖은 갱신하지 않고 직전 값을 유지한다 — 손가락이 순간적으로 밀리면 진폭이
+        // 위로 튀는데, 그걸 EMA에 먹이면 회복에 수 박동이 걸린다.
+        if (pp >= PPG_MIN_AMPLITUDE && raw_pi > 0.0f && raw_pi <= PPG_PI_MAX) {
+            p->pi = p->pi_valid ? p->pi + (raw_pi - p->pi) * PPG_PI_SMOOTH : raw_pi;
+            p->pi_valid = true;
+        }
+    }
+    // ⚠️ 이 블록은 반드시 ⑤ **뒤에** 있어야 한다. 순서를 바꾸면 방금 끝난 구간의
+    //    beat_max/min을 PI가 읽기 전에 지워버려 진폭이 항상 0에 가깝게 나온다.
+    //    (한 번의 crossing이 "이전 구간의 끝"이자 "다음 구간의 시작"이라 생기는 일이다)
+    if (crossing) {                 // 다음 구간 시작 — 교차점을 경계로 삼는다
+        p->beat_max = p->beat_min = s;
+        p->beat_window = true;
+    }
+
     // 한동안 박동이 없으면 옛 IBI는 더 이상 현재 심박이 아니다.
     if (p->last_beat_idx != 0
         && (p->idx - p->last_beat_idx) > (uint32_t)(PPG_STALE_MS * PPG_SAMPLE_RATE / 1000)) {
         p->ibi_count = p->ibi_idx = 0;
         p->last_beat_idx = 0;
+        // 박동을 못 보면 PI도 없다. BPM과 달리 PI는 "작은 값" 자체가 의미 있는 신호라,
+        // 못 보는 상태를 낮은 PI로 내보내면 극심한 혈관수축과 구분이 안 된다
+        // → 값을 내리는 게 아니라 **없음**으로 만든다.
+        //
+        // 부작용: PPG_MIN_AMPLITUDE(50카운트)가 곧 PI의 측정 하한이다. DC 50000에서
+        // PI 0.1% 아래는 "혈관수축이 심하다"가 아니라 "없음"으로 나온다는 뜻.
+        // 임상적으로도 PI 0.5% 미만은 신뢰 구간 밖이라 지금은 이 절충이 맞지만,
+        // 실센서 보정 때 IR 값을 보고 두 상수(FINGER_IR_ON/OFF, MIN_AMPLITUDE)를 함께 잡을 것.
+        p->beat_window = false;
+        p->pi_valid = false;
+        p->pi = 0.0f;
     }
 
+    // 다음 호출에서 상승 교차를 판정하려면 "직전 샘플"이 필요하다.
+    // 함수 맨 끝에서 갱신하는 게 중요하다 — 위 ④에서 p->prev를 아직 이전 값으로
+    // 읽어야 하므로, 중간에 갱신하면 prev와 s가 같아져 교차가 영영 검출되지 않는다.
     p->prev = s;
     return beat;
 }
@@ -547,16 +782,25 @@ static portMUX_TYPE s_ppg_mux = portMUX_INITIALIZER_UNLOCKED;
 // s_max_ok가 false면 ppg_task 자체가 뜨지 않으므로 has_bpm은 false로 남는다(= null 전송).
 static bool     s_ppg_has_bpm;
 static int      s_ppg_bpm;      // has_bpm이 false면 의미 없음
+// PI와 BPM은 유효해지는 조건이 달라 어느 쪽이 먼저 나올지도 심박에 따라 갈린다.
+// PI는 "PPG_PI_WARMUP 경과 + 박동 구간 1개", BPM은 "박동 3개"라, 느린 심박에선 PI가
+// 먼저(50bpm: PI 3.5s / BPM 4.7s) 빠른 심박에선 BPM이 먼저다(140bpm: BPM 1.8s / PI 3.0s).
+// 그래서 두 값은 플래그를 공유하지 않고 각자 들고 다닌다.
+static bool     s_ppg_has_pi;
+static float    s_ppg_pi;       // has_pi가 false면 의미 없음
 static bool     s_ppg_finger;
 static uint32_t s_ppg_ir;       // 원시 IR DC 수준 (PPG_FINGER_IR_ON/OFF 보정용으로 노출)
 
 // 측정 태스크(core 1)와 전송 루프(core 0)가 공유하는 값이라 스핀락으로 감싼다.
 // 복사만 하는 아주 짧은 구간이라 임계영역 길이는 문제되지 않는다.
-static void ppg_snapshot(bool *has_bpm, int *bpm, bool *finger, uint32_t *ir)
+static void ppg_snapshot(bool *has_bpm, int *bpm, bool *has_pi, float *pi,
+                         bool *finger, uint32_t *ir)
 {
     taskENTER_CRITICAL(&s_ppg_mux);
     *has_bpm = s_ppg_has_bpm;
     *bpm     = s_ppg_bpm;
+    *has_pi  = s_ppg_has_pi;
+    *pi      = s_ppg_pi;
     *finger  = s_ppg_finger;
     *ir      = s_ppg_ir;
     taskEXIT_CRITICAL(&s_ppg_mux);
@@ -604,10 +848,17 @@ static void ppg_task(void *arg)
         // ppg_bpm()의 "0 = 아직 신뢰할 값 없음"을 여기서 플래그로 바꾼다.
         // 이 줄 밖으로는 0이 BPM인 척 새어 나가지 않는다.
         int bpm = finger ? ppg_bpm(&ppg) : 0;
+        // PI는 계산이 필요 없어 별도 함수 없이 파이프라인 상태를 그대로 읽는다.
+        // finger를 한 번 더 보는 이유: 손가락이 떨어진 직후엔 ppg_reset()이 이미 돌아
+        // pi_valid가 false지만, 접촉 판정과 값 유효성의 근거를 한 줄에 묶어 두는 게 안전하다.
+        bool  has_pi = finger && ppg.pi_valid;
+        float pi     = has_pi ? ppg.pi : 0.0f;
 
         taskENTER_CRITICAL(&s_ppg_mux);
         s_ppg_has_bpm = (bpm > 0);
         s_ppg_bpm     = bpm;
+        s_ppg_has_pi  = has_pi;
+        s_ppg_pi      = pi;
         s_ppg_finger  = finger;
         s_ppg_ir      = ir_dc;
         taskEXIT_CRITICAL(&s_ppg_mux);
@@ -1037,24 +1288,33 @@ static int http_request(esp_http_client_method_t method, const char *url,
 
 // 서버 record BioSignalDto(int? Bpm, int Gsr, double? SkinTemp, DateTimeOffset Timestamp)와
 // 필드명/타입이 정확히 맞아야 모델 바인딩이 된다.
-// bpm/skinTemp는 둘 다 선택 항목이고, 그래서 인자도 (값이 있는가, 값) 쌍으로 대칭이다.
-static bool post_biosignal(bool has_bpm, int bpm, int gsr, bool has_temp, float temp_c)
+// bpm/skinTemp/pi는 전부 선택 항목이고, 그래서 인자도 (값이 있는가, 값) 쌍으로 대칭이다.
+//
+// ※ pi는 아직 BioSignalDto에 없다. System.Text.Json은 모르는 프로퍼티를 기본적으로
+//    무시하므로 구버전 서버도 400을 내지 않고 그냥 버린다 — bpm을 nullable로 바꿀 때와 달리
+//    **배포 순서 제약이 없다**(펌웨어를 먼저 올려도 안전). 서버에 Pi 필드를 추가하는 순간
+//    재빌드 없이 값이 들어오기 시작한다.
+static bool post_biosignal(bool has_bpm, int bpm, int gsr, bool has_temp, float temp_c,
+                           bool has_pi, float pi)
 {
-    char ts[32], body[192], resp[192];
+    char ts[32], body[224], resp[192];
     iso8601_now(ts, sizeof(ts));
 
     // 없는 값은 0이 아니라 **null**로 보낸다. 서버 TensionAnalyzer는 null을 "측정 없음"으로
     // 보고 그 요소의 가중치를 빼고 나머지를 재정규화하지만, 0을 보내면 "심박 0 = 완전히
     // 평온"으로 채점하고 60샘플 변동성 창까지 가짜 평탄선으로 오염시킨다.
-    char bpm_field[16], temp_field[16];
+    // PI는 더 위험하다 — 0은 "혈관이 완전히 수축했다"는 최대 스트레스로 읽힌다.
+    char bpm_field[16], temp_field[16], pi_field[16];
     if (has_bpm)  snprintf(bpm_field, sizeof(bpm_field), "%d", bpm);
     else          snprintf(bpm_field, sizeof(bpm_field), "null");
     if (has_temp) snprintf(temp_field, sizeof(temp_field), "%.1f", temp_c);
     else          snprintf(temp_field, sizeof(temp_field), "null");
+    if (has_pi)   snprintf(pi_field, sizeof(pi_field), "%.2f", pi);
+    else          snprintf(pi_field, sizeof(pi_field), "null");
 
     snprintf(body, sizeof(body),
-             "{\"bpm\":%s,\"gsr\":%d,\"skinTemp\":%s,\"timestamp\":\"%s\"}",
-             bpm_field, gsr, temp_field, ts);
+             "{\"bpm\":%s,\"gsr\":%d,\"skinTemp\":%s,\"pi\":%s,\"timestamp\":\"%s\"}",
+             bpm_field, gsr, temp_field, pi_field, ts);
 
     int status = http_request(HTTP_METHOD_POST, API_BASE "/biosignal", body, resp, sizeof(resp));
     // 200만 보지 않고 2xx 전체를 성공으로 본다 — 서버가 나중에 201 Created나
@@ -1093,8 +1353,8 @@ static bool api_selftest(void)
     ESP_LOGI(TAG, "  ✅ 200 OK: %s", resp);
 
     ESP_LOGI(TAG, "[자가진단 2/2] POST %s/biosignal (테스트 샘플)", API_BASE);
-    // 자가진단용 더미 샘플 — 경로만 확인하는 목적이라 측정값은 넣지 않는다(bpm/skinTemp 모두 null).
-    if (!post_biosignal(false, 0, 0, false, 0)) {
+    // 자가진단용 더미 샘플 — 경로만 확인하는 목적이라 측정값은 넣지 않는다(bpm/skinTemp/pi 모두 null).
+    if (!post_biosignal(false, 0, 0, false, 0, false, 0)) {
         ESP_LOGE(TAG, "  ❌ POST 실패 — 위 status 참고 (400이면 JSON 필드/시각 형식 확인)");
         return false;
     }
@@ -1171,9 +1431,11 @@ void app_main(void)
 
         bool has_bpm = false;
         int bpm = 0;
+        bool has_pi = false;
+        float pi = 0;
         bool finger = false;
         uint32_t ir_dc = 0;
-        ppg_snapshot(&has_bpm, &bpm, &finger, &ir_dc);
+        ppg_snapshot(&has_bpm, &bpm, &has_pi, &pi, &finger, &ir_dc);
 
         printf("\n===== 센서 =====\n");
         printf("GSR      : %d\n", gsr);
@@ -1186,6 +1448,12 @@ void app_main(void)
                                  (unsigned long)ir_dc, PPG_FINGER_IR_ON);
         else if (!has_bpm) printf("MAX30102 : 측정 중... (IR=%lu)\n", (unsigned long)ir_dc);
         else               printf("MAX30102 : %d BPM (IR=%lu)\n", bpm, (unsigned long)ir_dc);
+        // PI는 BPM보다 먼저 유효해지므로 별도 줄로 찍는다. 기준선을 잡으려면 이 값을
+        // 편안한 상태에서 몇 분 관찰해 개인 baseline을 먼저 재야 한다.
+        if (s_max_ok) {
+            if (has_pi) printf("           PI %.2f %%\n", pi);
+            else if (finger) printf("           PI 수렴 중...\n");
+        }
 
         // 링크가 한 번이라도 끊겼으면 붙잡고 있던 TLS 소켓은 이미 죽은 것이다.
         // 이벤트 태스크가 아니라 요청을 실제로 보내는 이 태스크에서 정리해야 안전하다.
@@ -1210,7 +1478,7 @@ void app_main(void)
         } else if (skip_left > 0) {
             skip_left--;                                  // 백오프 대기 중, 센서 출력만 계속
         } else {
-            bool sent = post_biosignal(has_bpm, bpm, gsr, dht_ok, temp_c);
+            bool sent = post_biosignal(has_bpm, bpm, gsr, dht_ok, temp_c, has_pi, pi);
             if (sent) {
                 if (!api_ok) ESP_LOGI(TAG, "서버 연동 복구됨");
                 api_ok = true;

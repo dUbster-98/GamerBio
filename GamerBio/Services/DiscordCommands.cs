@@ -32,7 +32,7 @@ public class DiscordCommands : InteractionModuleBase<SocketInteractionContext>
         var emotion = t.DominantEmotion is null ? "" : $" ({t.DominantEmotion})";
         await RespondAsync(
             $"🎮 **{t.State}** · 텐션 {t.Score}/100\n" +
-            $"BPM {t.BpmScore} · GSR {t.GsrScore} · 저변동성 {t.LowVariabilityScore} · 감정 {t.EmotionScore}{emotion}");
+            $"BPM {t.BpmScore} · GSR {t.GsrScore} · PI {t.PiScore} · 저변동성 {t.LowVariabilityScore} · 감정 {t.EmotionScore}{emotion}");
     }
 
     [SlashCommand("bpm", "최근 텐션 상태 기여도 중 심박 점수를 보여줍니다")]

@@ -67,6 +67,9 @@
                             <div class="row-time mono">@e.OccurredAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</div>
                             <span class="v-bpm">♥ @(e.Bpm?.ToString() ?? "––") BPM</span>
                             <span class="v-gsr">GSR @e.Gsr</span>
+                            @* PiScore는 당시 baseline 대비 상대값이라 나중에 되짚을 수 없다.
+                               원시 PI를 같이 보여줘야 점수를 사후 검증할 수 있다. *@
+                            <span class="v-pi">PI @(e.Pi?.ToString("F2") ?? "––")%</span>
                             <span class="v-emo">@(e.DominantEmotion ?? "—")</span>
                         </div>
                     </div>
@@ -195,7 +198,10 @@
     private static IEnumerable<(string Label, int Value)> Factors(DeadlyEvent e)
     {
         yield return ("BPM", e.BpmScore);
+        // GSR과 PI는 융합에서 가중치 한 슬롯을 공유하지만, 사후 분석에서 둘이 일치했는지
+        // 보려면 따로 남아 있어야 한다 (GSR 절대 구간이 아직 미보정이라 특히).
         yield return ("GSR", e.GsrScore);
+        yield return ("PI", e.PiScore);
         yield return ("VAR", e.LowVariabilityScore);
         yield return ("EMO", e.EmotionScore);
     }

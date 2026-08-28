@@ -97,9 +97,15 @@
                 <span class="contrib-label mono">BPM</span>
                 <span class="contrib-val mono">@(_tension?.BpmScore ?? 0)</span>
             </div>
+            @* GSR과 PI는 융합에서 가중치 한 슬롯(자율신경 각성)을 공유하지만, 어느 쪽이
+               말하고 있는지 / 둘이 일치하는지가 보여야 미보정 GSR을 판단할 수 있어 따로 띄운다. *@
             <div class="contrib-item">
                 <span class="contrib-label mono">GSR</span>
                 <span class="contrib-val mono">@(_tension?.GsrScore ?? 0)</span>
+            </div>
+            <div class="contrib-item">
+                <span class="contrib-label mono">PI</span>
+                <span class="contrib-val mono">@(_tension?.PiScore ?? 0)</span>
             </div>
             <div class="contrib-item">
                 <span class="contrib-label mono">LOW-VAR</span>
@@ -130,6 +136,14 @@
             </div>
             <div class="vital-num mono">@(_latest?.Gsr.ToString() ?? "––")</div>
             <div class="vital-unit mono">µS · GSR</div>
+        </div>
+
+        <div class="hud-panel vital v-pi">
+            <div class="vital-top">
+                <span class="hud-eyebrow">Perfusion</span>
+            </div>
+            <div class="vital-num mono">@(_latest?.Pi?.ToString("F2") ?? "––")</div>
+            <div class="vital-unit mono">% · PI</div>
         </div>
 
         <div class="hud-panel vital v-temp">
@@ -170,6 +184,7 @@
                         <th>TIME</th>
                         <th>BPM</th>
                         <th>GSR</th>
+                        <th>PI</th>
                         <th>TEMP</th>
                     </tr>
                 </thead>
@@ -180,6 +195,7 @@
                             <td class="t-time">@item.Timestamp.LocalDateTime.ToString("HH:mm:ss")</td>
                             <td class="t-heart">@(item.Bpm?.ToString() ?? "–")</td>
                             <td class="t-gsr">@item.Gsr</td>
+                            <td class="t-pi">@(item.Pi?.ToString("F2") ?? "–")</td>
                             <td class="t-temp">@(item.SkinTemp?.ToString("F1") ?? "–")</td>
                         </tr>
                     }

@@ -217,6 +217,7 @@ api.MapPost("/biosignal", async (
     {
         Bpm = dto.Bpm,
         Gsr = dto.Gsr,
+        Pi = dto.Pi,
         SkinTemp = dto.SkinTemp,
         Timestamp = dto.Timestamp,
         ReceivedAt = DateTimeOffset.UtcNow,
@@ -230,8 +231,9 @@ api.MapPost("/biosignal", async (
         await RecordDeadlyEntryAsync(deadlyEntry, db, hub, bus, logger);
     }
 
-    logger.LogInformation("Biosignal saved: id={Id} BPM={Bpm} GSR={Gsr} Temp={Temp} → tension={State}({Score})",
-        entity.Id, entity.Bpm?.ToString() ?? "-", entity.Gsr, entity.SkinTemp, tension.State, tension.Score);
+    logger.LogInformation("Biosignal saved: id={Id} BPM={Bpm} GSR={Gsr} PI={Pi} Temp={Temp} → tension={State}({Score})",
+        entity.Id, entity.Bpm?.ToString() ?? "-", entity.Gsr,
+        entity.Pi?.ToString("F2") ?? "-", entity.SkinTemp, tension.State, tension.Score);
 
     // 두 경로로 동시에 발행한다: SignalR = 외부 브라우저 클라이언트,
     // BioEventBus = 같은 프로세스 안의 서버 렌더 페이지.
@@ -416,7 +418,8 @@ static async Task RecordDeadlyEntryAsync(
     bus.PublishDeadlyEvent(entry);
 }
 
-// Bpm은 선택 항목이다: PPG 센서에 피부 접촉이 없는 동안 웨어러블은 이 값을 빼고
-// (null로) 보내며, 분석기는 이를 심박 0이 아니라 "측정값 없음"으로 취급한다.
-record BioSignalDto(int? Bpm, int Gsr, double? SkinTemp, DateTimeOffset Timestamp);
+// Bpm과 Pi는 선택 항목이다: PPG 센서에 쓸 만한 신호가 없는 동안 웨어러블은 이 값들을
+// 빼고(null로) 보내며, 분석기는 이를 0이 아니라 "측정값 없음"으로 취급한다.
+// (Pi에서 0은 "혈관이 완전히 수축했다" = 최대 스트레스로 읽히므로 특히 중요하다)
+record BioSignalDto(int? Bpm, int Gsr, double? Pi, double? SkinTemp, DateTimeOffset Timestamp);
 record EmotionDto(string? Dominant, Dictionary<string, double>? Scores, DateTimeOffset? Timestamp);

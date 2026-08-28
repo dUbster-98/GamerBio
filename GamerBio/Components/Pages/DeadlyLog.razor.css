@@ -144,6 +144,9 @@
     display: flex;
     flex-direction: row;
     align-items: center;
+    /* 항목이 4개로 늘어 좁은 화면에서 넘칠 수 있다. 각 항목은 nowrap을 유지하되
+       (숫자와 단위가 갈라지면 안 된다) 항목 사이에서는 접히게 한다. */
+    flex-wrap: wrap;
     gap: 1.5rem;
     font-size: 0.95rem;
     white-space: nowrap;
@@ -151,6 +154,7 @@
 }
 .v-bpm { color: var(--heart); }
 .v-gsr { color: var(--gsr); }
+.v-pi  { color: var(--pi); }
 .v-emo { color: var(--st-deadly); text-transform: uppercase; letter-spacing: 0.12em; }
 
 @media (max-width: 640px) {

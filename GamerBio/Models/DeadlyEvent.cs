@@ -17,12 +17,17 @@ public class DeadlyEvent
 
     public int BpmScore { get; set; }
     public int GsrScore { get; set; }
+    public int PiScore { get; set; }
     public int LowVariabilityScore { get; set; }
     public int EmotionScore { get; set; }
     public string? DominantEmotion { get; set; }
 
     /// <summary>Raw vitals from the latest biosignal at the time of entry.
-    /// Bpm is null when the PPG sensor had no skin contact at that moment.</summary>
+    /// Bpm and Pi are null when the PPG sensor had no usable signal at that moment.
+    /// Pi is stored alongside PiScore because the score is relative to a rolling
+    /// baseline that is gone by the time anyone reads the row back — without the raw
+    /// value the score cannot be re-derived or sanity-checked later.</summary>
     public int? Bpm { get; set; }
     public int Gsr { get; set; }
+    public double? Pi { get; set; }
 }

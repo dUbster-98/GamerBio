@@ -21,6 +21,9 @@
     /* vitals */
     --heart: #ff3a5e;  /* BPM   */
     --gsr:   #21d4fd;  /* GSR   */
+    /* PI는 GSR과 같은 자율신경 축을 재므로 같은 청록 계열의 이웃 색을 준다 —
+       융합에서 한 슬롯을 공유한다는 사실이 색으로도 읽히도록. */
+    --pi:    #5ce1c6;  /* PI    */
     --temp:  #ffb14d;  /* temp  */
     --accent:#7dff9b;  /* signal / online */
 
