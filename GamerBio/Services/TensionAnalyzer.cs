@@ -20,9 +20,55 @@ public class TensionAnalyzer
     // GSR 절대 수준 구간. 위의 변화율 점수는 "급등"만 잡아낸다 — 높은 상태가
     // 지속되면 baseline 자체가 따라 올라가 변화율이 0으로 수렴하기 때문이다.
     // 절대 수준을 같이 보면 지속적인 각성이 점수에서 사라지지 않는다.
-    // 실제 센서 단위가 확정되면 다시 잡을 것 (더미 데이터 기준 대략 100~900).
-    private const double GsrAbsLow = 300;
-    private const double GsrAbsHigh = 800;
+    //
+    // 2026-09-07 실센서 측정으로 재보정했다. 종전 값(300~800)은 더미 데이터 기준이었고,
+    // 실제 착용 상태의 raw는 그 구간을 통째로 벗어나 있었다 — 스릴러 시청 세션 200샘플에서
+    // 착용 중 GSR은 p05=739 / p50=1016 / p95=1239 / max=1451 이었다. 즉 **착용 샘플의
+    // 4분의 3이 GsrAbsHigh=800을 넘어** MapScore가 항상 100을 반환했고, GSR 요소는 상수가
+    // 되어 정보를 하나도 싣지 못하고 있었다. 게다가 GSR은 (아래 재정규화에서) 접촉이 끊겨도
+    // 남는 유일한 요소라, 그 상수 100이 그대로 융합 점수가 되어 Deadly를 계속 찍어냈다.
+    // 같은 세션에서 관측된 전체 동작 범위(약 600~1450)를 0~100에 펼치도록 잡는다.
+    //
+    // ⚠️ 여전히 한 세션(스릴러 시청 = 각성 편향)에서 뽑은 값이다. 진짜 이완 상태(수면 전,
+    //    무자극 휴식)의 baseline을 따로 재면 GsrAbsLow는 더 내려갈 여지가 있다.
+    private const double GsrAbsLow = 650;
+    private const double GsrAbsHigh = 1300;
+
+    // --- 신호 유효성 게이트 ---
+    // GSR은 오랫동안 "항상 존재하는 요소"로 취급됐지만, 실측 로그는 그 가정이 틀렸음을
+    // 보여준다. 전극이 피부에서 떨어지면 raw가 0~67로 주저앉고(개방 회로), 반대로 전극이
+    // 서로 닿거나 도전성 표면에 놓이면 2446~2580으로 붙박인다. 어느 쪽도 피부 전도도가
+    // 아니다. 그런데 둘 다 "유효한 GSR"로 채점되어 각각 Relaxed(0점)와 Deadly(100점)라는
+    // 정반대의 거짓 판정을 만들어냈다.
+    //
+    // 펌웨어 gsr_read()가 ADC 실패 시 돌려주는 -1도 이 하한 게이트가 같이 걷어낸다
+    // (esp32/main/main.c의 "GSR 실측 보정할 때 같이 결정할 것" 주석이 가리키던 문제다).
+    // 착용 중 관측 최소값이 176, p05가 739이므로 100은 안전한 분리선이다.
+    private const int GsrOpenCircuit = 100;
+    // 상한은 근거가 얇으므로(관측 표본이 적다) 넉넉히 잡는다. 착용 중 최대가 1451,
+    // 미착용 붙박이가 2446+ 이므로 그 사이에 둔다. 진짜 땀이 많은 상태를 자르지 않도록
+    // 관측 최대값보다 한참 위에 두되, 미착용 붙박이는 확실히 걸러지는 위치다.
+    private const int GsrRailHigh = 2200;
+
+    // --- BPM 유효성 (하모닉 아티팩트 방어) ---
+    // 실측 로그에 안정 구간 70~85 사이에서 142/136/130/100 같은 값이 산발적으로 섞인다.
+    // 142 = 2×71, 136 = 2×68, 130 = 2×65 — 정확히 2배다. 펌웨어 박동 검출기가 이중맥박파
+    // (dicrotic notch)를 별도 박동으로 세어 IBI가 반으로 쪼개진 것이다(근본 원인은 펌웨어
+    // 불응기가 짧았던 것이고 그쪽도 같이 고쳤다). 반대 방향으로는 박동을 놓쳐 46/56처럼
+    // 절반으로 떨어지는 값도 나온다.
+    //
+    // 심박은 관성이 있는 물리량이라 2초 만에 70에서 142로 갈 수 없다. 그래서 "직전에
+    // 채택한 값에서 생리학적으로 가능한 변화폭"을 넘는 샘플은 측정이 아니라 아티팩트로
+    // 보고 **결측 처리**한다 (0으로 채점하지 않는다 — BPM null 규약과 같은 이유).
+    // 초당 10bpm은 놀람 반응(startle)보다도 넉넉한 상한이다: 이 예산이면 6초 만에
+    // 70 → 130까지 오를 수 있으므로 진짜 스트레스 급상승은 그대로 통과한다.
+    private const double BpmSlewPerSecond = 10.0;
+    // 샘플 간격이 짧아도 최소한 이만큼은 허용한다. BPM은 IBI 중앙값에서 나오는 양자화된
+    // 값이라(60000/IBI) 안정 상태에서도 한 단계가 몇 bpm씩 튄다.
+    private const int BpmSlewMinBudget = 12;
+    // 이만큼 BPM이 끊겼다가 돌아오면 직전 값과 비교하는 것 자체가 무의미하다
+    // (접촉이 끊긴 사이 심박이 실제로 변했을 수 있다) → 비교 없이 새 기준으로 받는다.
+    private static readonly TimeSpan BpmContactGap = TimeSpan.FromSeconds(15);
     // BPM 표준편차 매핑 구간. 낮을수록(=변동이 없을수록) 긴장으로 본다.
     private const double StdDevLow = 2;
     private const double StdDevHigh = 10;
@@ -123,17 +169,32 @@ public class TensionAnalyzer
     // 이 주기와 무관하게 항상 즉시 기록된다.
     private static readonly TimeSpan DeadlyRepeatInterval = TimeSpan.FromSeconds(5);
 
-    private readonly LinkedList<BioSignal> _window = new();
+    /// <summary>유효성 게이트를 통과한 뒤의 한 샘플. 원본 <see cref="BioSignal"/> 대신
+    /// 이걸 창에 쌓는 이유는 두 가지다. ① 게이트에서 탈락한 값(전극 개방 GSR, 하모닉 BPM)이
+    /// baseline·변동성 계산에 흘러드는 것을 구조적으로 막는다 — 값을 지우는 곳과 쓰는 곳이
+    /// 한 군데로 모인다. ② EF가 추적 중인 엔티티를 건드리지 않는다: <c>UpdateBio</c>는
+    /// <c>SaveChangesAsync</c> 이후에 호출되고 그 뒤에 Deadly 기록으로 한 번 더 저장되므로,
+    /// 엔티티의 Bpm/Gsr을 여기서 고치면 **보정값이 DB에 덮어써진다**. DB에는 센서가 말한
+    /// 원본이 남아야 한다(이 로그가 다음 보정의 근거가 된다).</summary>
+    private readonly record struct Sample(DateTimeOffset At, int? Bpm, int? Gsr, double? Pi);
+
+    private readonly LinkedList<Sample> _window = new();
     private readonly LinkedList<(DateTimeOffset At, int Stress)> _emotionHistory = new();
     // PI baseline 전용 이력. _window(60샘플 ≈ 2분)를 재사용하지 않는 이유는 PiBaselineWindow가
     // 10분이라 창을 늘려야 하는데, 그러면 GSR baseline과 BPM 변동성 계산까지 같이 바뀌어
     // 이미 조정된 동작이 회귀하기 때문이다. _emotionHistory와 같은 별도 이력 패턴을 따른다.
     private readonly LinkedList<(DateTimeOffset At, double Pi)> _piHistory = new();
     private readonly object _lock = new();
+    // 원본 엔티티. 채점에는 쓰지 않고(그건 _latestSample이 한다) DeadlyEvent에 당시 **원시**
+    // 바이탈을 남기는 데만 쓴다 — 사후에 게이트가 옳았는지 되짚으려면 원본이 필요하다.
     private BioSignal? _latestBio;
+    private Sample? _latestSample;
     private EmotionReading? _latestEmotion;
     private TensionState _lastState = TensionState.Calibrating;
     private DateTimeOffset _lastDeadlyRecordAt = DateTimeOffset.MinValue;
+    // BPM 급변 게이트가 비교 기준으로 쓰는, 마지막으로 채택된 심박.
+    private int? _lastAcceptedBpm;
+    private DateTimeOffset _lastAcceptedBpmAt;
 
     /// <summary>새 생체 샘플을 가장 최근 감정과 융합한다.
     /// <paramref name="deadlyEntry"/>는 Deadly에 진입할 때, 그리고 Deadly가
@@ -144,18 +205,55 @@ public class TensionAnalyzer
         lock (_lock)
         {
             _latestBio = sample;
-            _window.AddLast(sample);
+
+            var validated = Validate(sample);
+            _latestSample = validated;
+            _window.AddLast(validated);
             while (_window.Count > WindowSize)
             {
                 _window.RemoveFirst();
             }
 
-            TrackPi(sample);
+            TrackPi(validated);
 
             var reading = Compute(sample.ReceivedAt);
             deadlyEntry = TrackTransition(reading);
             return reading;
         }
+    }
+
+    /// <summary>원시 샘플에서 물리적으로 말이 되지 않는 값을 걷어낸다. 걸러진 값은 0이
+    /// 아니라 <c>null</c>이 된다 — 0으로 채점하면 "완전히 평온"이라는 적극적인 주장이
+    /// 되지만, 우리가 아는 것은 "모른다"뿐이기 때문이다. 융합 쪽은 null인 요소의 가중치를
+    /// 빼고 재정규화하므로 이 구분이 그대로 결과에 반영된다.
+    /// 반드시 _lock을 잡은 상태에서 호출해야 한다.</summary>
+    private Sample Validate(BioSignal sample)
+    {
+        int? gsr = sample.Gsr is > GsrOpenCircuit and < GsrRailHigh ? sample.Gsr : null;
+
+        int? bpm = sample.Bpm;
+        if (bpm is int candidate)
+        {
+            var elapsed = sample.ReceivedAt - _lastAcceptedBpmAt;
+            if (_lastAcceptedBpm is int previous && elapsed < BpmContactGap)
+            {
+                // 경과 시간에 비례해 예산을 준다. 샘플이 한두 번 빠져 간격이 벌어졌다면
+                // 그만큼 심박도 더 움직일 수 있었으므로 허용폭도 같이 넓어져야 한다.
+                double budget = Math.Max(BpmSlewMinBudget, BpmSlewPerSecond * elapsed.TotalSeconds);
+                if (Math.Abs(candidate - previous) > budget)
+                {
+                    bpm = null;
+                }
+            }
+
+            if (bpm is not null)
+            {
+                _lastAcceptedBpm = candidate;
+                _lastAcceptedBpmAt = sample.ReceivedAt;
+            }
+        }
+
+        return new Sample(sample.ReceivedAt, bpm, gsr, sample.Pi);
     }
 
     /// <summary>새 샘플을 추가하지 않고 현재 융합 상태만 다시 계산해 반환한다.
@@ -194,7 +292,7 @@ public class TensionAnalyzer
     }
 
     // PI baseline 이력을 갱신한다. 반드시 _lock을 잡은 상태에서 호출해야 한다.
-    private void TrackPi(BioSignal sample)
+    private void TrackPi(Sample sample)
     {
         if (sample.Pi is not double pi || pi <= 0)
         {
@@ -208,14 +306,14 @@ public class TensionAnalyzer
         // 이력을 버린다. 부착 위치가 바뀌면 AC/DC 비율 자체가 달라지므로 그 경계를
         // 넘어선 baseline 비교는 의미가 없다.
         if (_piHistory.Count > 0
-            && sample.ReceivedAt - _piHistory.Last!.Value.At > PiContactGap)
+            && sample.At - _piHistory.Last!.Value.At > PiContactGap)
         {
             _piHistory.Clear();
         }
 
-        _piHistory.AddLast((sample.ReceivedAt, pi));
+        _piHistory.AddLast((sample.At, pi));
         while (_piHistory.Count > 0
-            && sample.ReceivedAt - _piHistory.First!.Value.At > PiBaselineWindow)
+            && sample.At - _piHistory.First!.Value.At > PiBaselineWindow)
         {
             _piHistory.RemoveFirst();
         }
@@ -308,29 +406,39 @@ public class TensionAnalyzer
         string? dominant = emotionFresh ? _latestEmotion!.Dominant : null;
 
         // 융합 점수가 의미를 가지려면 생체 이력이 어느 정도 쌓여 있어야 한다.
-        if (_latestBio is null || _window.Count < CalibrationSize)
+        if (_latestSample is not Sample sample || _window.Count < CalibrationSize)
         {
             return new TensionReading(
                 TensionState.Calibrating, 0, 0, 0, 0, 0, emotionScore, dominant, at);
         }
-
-        var sample = _latestBio;
 
         // 웨어러블은 PPG 센서에 피부 접촉이 있을 때만 심박을 보고한다. BPM이 없는
         // 것은 BPM이 0인 것과 다르다: 0으로 채점하면 "완전히 평온"으로 읽히고,
         // 더 나쁘게는 변동성 창을 가짜 평탄선으로 오염시킨다. 그래서 0을 넣는
         // 대신 이 요소를 융합에서 빼버린다.
         bool hasBpm = sample.Bpm is not null;
-        int bpmScore = hasBpm ? MapScore(sample.Bpm.Value, BpmLow, BpmHigh) : 0;
+        int bpm = sample.Bpm ?? 0;   // hasBpm이 false면 아래 어디서도 읽지 않는다
+        int bpmScore = hasBpm ? MapScore(bpm, BpmLow, BpmHigh) : 0;
 
-        // GSR baseline은 창의 앞쪽 절반(=오래된 샘플들)의 평균으로 잡는다.
-        int baselineCount = Math.Max(1, _window.Count / 2);
-        double gsrBaseline = _window.Take(baselineCount).Average(x => x.Gsr);
-        double gsrDelta = gsrBaseline > 0 ? (sample.Gsr - gsrBaseline) / gsrBaseline : 0;
-        // 급등(변화율)과 지속 각성(절대 수준) 중 더 크게 말하는 쪽을 채택한다.
-        int gsrScore = Math.Max(
-            MapScore(gsrDelta, GsrDeltaMin, GsrDeltaMax),
-            MapScore(sample.Gsr, GsrAbsLow, GsrAbsHigh));
+        // GSR도 이제 빠질 수 있다 — 전극이 떨어지거나(개방) 붙박이면(레일) 유효성 게이트가
+        // null로 만든다. 종전에는 "항상 존재하는 요소"로 가정했지만 그 가정이 틀렸다는 것이
+        // 실측 로그로 드러났다 (GsrOpenCircuit/GsrRailHigh 주석 참고).
+        bool hasGsr = sample.Gsr is not null;
+        int gsr = sample.Gsr ?? 0;   // hasGsr이 false면 아래 블록에 들어가지 않는다
+        int gsrScore = 0;
+        if (hasGsr)
+        {
+            // GSR baseline은 창의 앞쪽 절반(=오래된 샘플들)의 평균으로 잡는다.
+            // 게이트에서 탈락한 샘플은 baseline을 오염시키므로 유효한 것만 센다.
+            var gsrWindow = _window.Where(x => x.Gsr is not null).Select(x => (double)x.Gsr!.Value).ToArray();
+            int baselineCount = Math.Max(1, gsrWindow.Length / 2);
+            double gsrBaseline = gsrWindow.Take(baselineCount).Average();
+            double gsrDelta = gsrBaseline > 0 ? (gsr - gsrBaseline) / gsrBaseline : 0;
+            // 급등(변화율)과 지속 각성(절대 수준) 중 더 크게 말하는 쪽을 채택한다.
+            gsrScore = Math.Max(
+                MapScore(gsrDelta, GsrDeltaMin, GsrDeltaMax),
+                MapScore(gsr, GsrAbsLow, GsrAbsHigh));
+        }
 
         // PI: 개인 baseline 대비 **하락률**로 채점한다 (절대값은 쓰지 않는다 — 위 상수 주석 참고).
         // baseline보다 높으면 하락률이 음수가 되고 MapScore가 0으로 clamp한다 — 혈관확장은
@@ -350,14 +458,20 @@ public class TensionAnalyzer
         //   · 평균이면 정상 PI가 헛스파이크를 끌어내린다 — PI를 도입한 목적(미보정 GSR의
         //     교차 검증)이 바로 이것이다. 반대로 둘이 함께 오르면 서로를 뒷받침한다.
         //   · 혈관은 조용한데 땀샘만 각성했다면 불확실성이 실재하는 것이고, 중간값이 정직하다.
-        int arousalScore = hasPi ? (gsrScore + piScore) / 2 : gsrScore;
+        // 이제 GSR도 빠질 수 있으므로 한쪽만 있으면 그쪽 단독, 둘 다 없으면 각성 슬롯 자체가
+        // 비고 아래 재정규화에서 가중치가 빠진다.
+        bool hasArousal = hasGsr || hasPi;
+        int arousalScore =
+            hasGsr && hasPi ? (gsrScore + piScore) / 2
+            : hasGsr ? gsrScore
+            : piScore;
 
         // 변동성 시계열에는 실제로 심박이 담긴 샘플만 넣는다 — 접촉이 끊긴 구간을
         // 이어 붙이면 그 공백 자체가 심한 변동으로 읽히고, 결과적으로 스트레스가
         // 오히려 *낮게* 나온다.
         var recent = _window.TakeLast(VariabilityWindow)
             .Where(x => x.Bpm is not null)
-            .Select(x => (double)x.Bpm.Value)
+            .Select(x => (double)x.Bpm!.Value)
             .ToArray();
         bool hasVariability = hasBpm && recent.Length >= VariabilityMinSamples;
         int lowVariabilityScore = 0;
@@ -372,37 +486,81 @@ public class TensionAnalyzer
         // 가중 융합. 이번 회차에 실제로 입력이 있는 요소들만 남겨 재정규화하므로
         // 융합 점수는 0~100 스케일을 유지한다.
         double wBpm = hasBpm ? WeightBpm : 0.0;
+        double wArousal = hasArousal ? WeightArousal : 0.0;
         double wLowVariability = hasVariability ? WeightLowVariability : 0.0;
         double wEmotion = emotionFresh ? WeightEmotion : 0.0;
-        double weightSum = wBpm + WeightArousal + wLowVariability + wEmotion;
+        double weightSum = wBpm + wArousal + wLowVariability + wEmotion;
+
+        // GSR이 더 이상 "항상 있는" 요소가 아니므로 모든 요소가 동시에 빠질 수 있다.
+        // 이 경우 점수를 지어내지 않고 Calibrating으로 물러난다 — 센서가 몸에서 떨어진
+        // 상태라 보고할 생리 정보가 실제로 없다.
+        if (weightSum <= 0)
+        {
+            return new TensionReading(
+                TensionState.Calibrating, 0, 0, 0, 0, 0, emotionScore, dominant, at);
+        }
+
         int composite = (int)Math.Round(
             (bpmScore * wBpm +
-             arousalScore * WeightArousal +
+             arousalScore * wArousal +
              lowVariabilityScore * wLowVariability +
              emotionScore * wEmotion) / weightSum);
+
+        // ── 단일 신호로는 Deadly를 선언하지 못한다 ──────────────────────────────
+        // 재정규화에는 구멍이 하나 있었다. 요소가 하나만 남으면 그 요소의 점수가 **그대로**
+        // 융합 점수가 되므로, 센서 하나가 100점을 내면 그것만으로 Deadly가 된다.
+        // 실측 로그에서 이게 그대로 터졌다: 접촉이 끊겨 BPM·PI·감정이 모두 빠진 구간에서
+        // 미보정 GSR 단독으로 score=100 Deadly가 반복 기록됐다 (오늘 12건 중 10건이
+        // bpm=null, pi=null, gsrScore=100 이었다).
+        //
+        // 아래 extremeBio 게이트가 (hasBpm || hasPi)로 정확히 이 상황을 막으려 했지만,
+        // 그건 **승격 경로**만 지킨다. 가중 평균 자체가 이미 85를 넘어버리면 승격이 필요
+        // 없으므로 게이트를 그냥 지나쳐 간다. 그래서 같은 원칙을 평균 쪽에도 적용한다.
+        //
+        // 저변동성은 BPM에서 파생된 값이라 독립 신호로 세지 않는다.
+        int signalCount = (hasBpm ? 1 : 0) + (hasGsr ? 1 : 0) + (hasPi ? 1 : 0) + (emotionFresh ? 1 : 0);
+        if (signalCount <= 1)
+        {
+            composite = Math.Min(composite, StressedCeiling - 1);
+        }
 
         // 승격(override) 조건들 — 가중 평균만 쓰면 평온한(또는 아예 없는) 표정이
         // 실제 위험을 가려버리는 경우들이다. 각 조건은 상태만이 아니라 융합 점수
         // 자체를 끌어올린다. 그래야 대시보드 게이지도 판정과 어긋나지 않는다.
-        // 아래 생체 전용 점수도 같은 방식으로 재정규화하되 감정만 뺀다. GSR은 항상
-        // 기여하므로 심박이 아예 없어도 분모가 0이 되지 않는다.
-        double bioComposite =
-            (bpmScore * wBpm + arousalScore * WeightArousal + lowVariabilityScore * wLowVariability)
-            / (wBpm + WeightArousal + wLowVariability);
-        bool extremeBpm = hasBpm && sample.Bpm.Value >= BpmExtreme;
-        // 이 조건은 "센서 전체"를 대변하므로 신호가 하나뿐이어서는 안 된다. 심박도 PI도
-        // 없으면 bioComposite는 GSR 점수 하나로 무너지는데, GSR 절대 구간은 아직 실센서
-        // 기준으로 보정되지 않았다. 그대로 두면 접촉이 끊길 때마다 Deadly가 뜬다.
+        // 아래 생체 전용 점수도 같은 방식으로 재정규화하되 감정만 뺀다. 이제 GSR까지
+        // 빠질 수 있으므로 분모가 0이 되는 경우를 명시적으로 다룬다.
+        double bioWeightSum = wBpm + wArousal + wLowVariability;
+        double bioComposite = bioWeightSum > 0
+            ? (bpmScore * wBpm + arousalScore * wArousal + lowVariabilityScore * wLowVariability)
+              / bioWeightSum
+            : 0;
+        // BPM 극단은 단일 신호여도 승격을 허용한다(위 signalCount 상한의 예외). GSR과 달리
+        // BPM은 보정이 필요 없는 절대 단위이고, 이제 급변 게이트까지 통과한 값이라 한 샘플
+        // 아티팩트로 160이 나올 수 없다. "심장이 실제로 뛰고 있다"는 그 자체로 충분한 근거다.
+        bool extremeBpm = hasBpm && bpm >= BpmExtreme;
+        // 이 조건은 이름 그대로 "센서 **전체**"를 대변하므로 신호가 하나뿐이어서는 안 된다.
+        // 종전 게이트는 (hasBpm || hasPi)였는데, 그건 GSR이 항상 있다는 전제 위에서만
+        // "둘 이상"을 뜻했다. 이제 GSR도 빠질 수 있으므로 그 전제가 깨졌다 — 조건을 세는
+        // 방식으로 바꿔 전제 없이 같은 의도를 표현한다.
         //
-        // PI가 있으면 심박이 없어도 이 조건을 허용한다: 각성 점수가 GSR과 PI의 평균이므로
-        // 90을 넘으려면 **둘 다** 90 이상이어야 하고, 그건 서로 독립인 두 효과기가 동시에
-        // 극단을 가리키는 상황이다. 미보정 GSR 단독으로는 도달할 수 없다.
-        bool extremeBio = (hasBpm || hasPi) && bioComposite >= BioOnlyExtreme;
+        // 두 개 이상을 요구하는 이유: 서로 독립인 두 측정이 동시에 극단을 가리켜야 그게
+        // 생리 현상이지, 하나만 튀면 그건 아티팩트이거나 미보정이다. 각성 슬롯이 GSR과 PI의
+        // 평균인 것도 같은 취지다 — 90을 넘으려면 땀샘과 혈관이 **둘 다** 극단이어야 한다.
+        int bioSignalCount = (hasBpm ? 1 : 0) + (hasGsr ? 1 : 0) + (hasPi ? 1 : 0);
+        bool extremeBio = bioSignalCount >= 2 && bioComposite >= BioOnlyExtreme;
         // 센서가 이미 Focused 이상인 상태에서 최근 30초 감정 평균이 더해져
         // Deadly 선을 넘으면 승격 (단발 공포가 아니라 지속된 공포만 반영).
-        bool sustainedEmotion = bioComposite >= FocusedCeiling
-            && bioComposite + WeightEmotion * WindowedEmotionStress(DateTimeOffset.UtcNow)
-               >= StressedCeiling;
+        //
+        // ⚠️ 감정 기여가 실제로 0보다 커야 한다. 이 조건이 없으면 bioComposite 하나가
+        //    85를 넘는 순간 `bioComposite + 0.25 × 0 >= 85`가 **감정이 전혀 없어도** 참이
+        //    되어, 이름과 달리 감정과 무관한 승격 경로가 된다. 카메라가 꺼져 있던 실측
+        //    세션에서 이게 위 signalCount 상한을 그대로 우회해 GSR 단독 Deadly를 되살렸다.
+        //    WindowedEmotionStress는 최소 샘플 수 미달이면 0을 돌려주므로 이 비교 하나가
+        //    "감정 이력이 충분히 쌓였고 실제로 스트레스를 가리킨다"를 함께 보장한다.
+        double windowedEmotion = WindowedEmotionStress(DateTimeOffset.UtcNow);
+        bool sustainedEmotion = windowedEmotion > 0
+            && bioComposite >= FocusedCeiling
+            && bioComposite + WeightEmotion * windowedEmotion >= StressedCeiling;
         if (extremeBpm || extremeBio || sustainedEmotion)
         {
             composite = Math.Max(composite, StressedCeiling);

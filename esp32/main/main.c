@@ -34,6 +34,8 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"   // HTTPS 인증서 검증용 내장 루트 CA 번들
 #include "esp_system.h"       // esp_reset_reason
+#include "esp_attr.h"         // IRAM_ATTR — DHT 비트뱅잉을 플래시 밖에 둔다
+#include "soc/gpio_struct.h"  // GPIO 레지스터 직접 접근 (같은 이유, 아래 dht_level 참고)
 
 static const char *TAG = "gamerbio";
 
@@ -43,8 +45,11 @@ static const char *TAG = "gamerbio";
 #define I2C_SCL_GPIO      9
 #define DHT_GPIO          5
 
-#define WIFI_SSID         "KT_GiGA_73B6" 
-#define WIFI_PASS         "5ax69ee549"
+// #define WIFI_SSID         "KT_GiGA_73B6" 
+// #define WIFI_PASS         "5ax69ee549"
+#define WIFI_SSID         "SK_A5F4_2.4G" 
+#define WIFI_PASS         "cdu$@c+hcj"
+
 #define WIFI_MAX_RETRY    5
 
 // 최대 송신 출력 (0.25dBm 단위, 8~84). 기본값 80 = 20dBm이면 송신 순간 350mA 넘게 당겨서
@@ -477,9 +482,83 @@ static int max30102_drain(uint32_t *out, bool *gap)
 #define PPG_DC_ALPHA       0.95f    // 하이패스 계수 → 차단 ≈ 0.4Hz(=24bpm) 아래를 제거
 #define PPG_ENV_DECAY      0.01f    // 진폭 포락선 수축 속도 (시정수 ≈ 2초)
 #define PPG_MIN_AMPLITUDE  50.0f    // 진폭이 이보다 작으면 맥파가 아니라 잡음으로 본다
-#define PPG_IBI_MIN_MS     273      // 220 bpm — 이보다 짧은 간격은 중복 검출
+#define PPG_IBI_MIN_MS     273      // 220 bpm — 절대 하한. 아래 적응 불응기의 바닥이 된다
 #define PPG_IBI_MAX_MS     2000     // 30 bpm  — 이보다 길면 박동을 놓친 것
-#define PPG_IBI_SLOTS      5        // 중앙값을 낼 IBI 개수
+
+/* --- 불응기(refractory): 이중맥박파(dicrotic notch) 방어 ---
+ *
+ * PPG_IBI_MIN_MS 하나로 notch를 막으려던 것이 실측에서 실패했다. 서버 로그에 안정
+ * 구간 70~85 사이로 142/136/130/157/200 같은 값이 섞여 들어왔고, 142 = 2×71,
+ * 136 = 2×68, 130 = 2×65 로 **정확히 2배**였다 — 한 박동이 둘로 세어진 것이다.
+ *
+ * 이유는 단순한 산수였다. notch는 심주기의 대략 35~45% 지점에 온다. 심박 70이면
+ * 주기가 857ms이므로 notch는 300~390ms 뒤에 오는데, 이는 273ms 하한보다 **길다**.
+ * 그래서 notch 교차가 정상 박동으로 채택되고 IBI가 300 / 557처럼 쪼개졌다.
+ *
+ * 고정값으로는 풀 수 없는 문제다: 심박 70의 notch(≈300ms)를 막으려면 하한이 400ms는
+ * 되어야 하는데, 그러면 150bpm 이상의 진짜 박동도 같이 막힌다. 그래서 **현재 심박에
+ * 따라 불응기를 움직인다**(적응 불응기, ECG 검출기의 표준 기법).
+ *
+ *   불응기 = clamp(현재 주기 × 0.5, PPG_IBI_MIN_MS, PPG_REFRACT_MAX_MS)
+ *
+ * 0.5인 이유: notch(주기의 0.35~0.45)보다는 뒤, 다음 박동(주기의 1.0)보다는 확실히 앞.
+ * 양쪽에 여유를 둔 지점이다.
+ *
+ * ▸ 부트스트랩이 실제 해법이다 (예방 > 탈출)
+ *   IBI가 아직 3개도 없을 때는 **가장 긴** 불응기(PPG_REFRACT_MAX_MS)에서 출발한다.
+ *   이유는 한번 쪼개진 상태에 빠지면 어떤 추정치로도 깔끔하게 못 빠져나오기 때문이다:
+ *   심박 70의 notch가 채택되면 IBI가 [360,497,360,497,...]로 쪼개지는데, 여기서
+ *   불응기를 다시 360 위로 올리려면 긴 쪽(497)의 0.72배가 필요하다. 그런데 비율을
+ *   0.72로 잡으면 이번엔 박동 누락(IBI가 2배=1714)에서 0.72×1714=1234가 되어 진짜
+ *   박동을 전부 막는 폭주가 생긴다. 양쪽을 동시에 만족하는 비율은 없다.
+ *   → 그래서 "탈출"을 설계하지 않고 **애초에 빠지지 않게** 첫 박동부터 막는다.
+ *
+ * ▸ 그 다음엔 중앙값으로 적응한다 (최댓값이 아니라)
+ *   부트스트랩 덕에 쪼개진 상태를 겪지 않으므로 버퍼가 깨끗하고, 그러면 중앙값이
+ *   최댓값보다 낫다 — 박동을 하나 놓쳐 IBI가 2배로 튄 값이 섞여도 중앙값은 그걸
+ *   통째로 무시한다(ppg_bpm이 평균 대신 중앙값을 쓰는 이유와 같다). 최댓값을 쓰면
+ *   그 하나가 불응기를 끌어올려 진짜 박동까지 막는다.
+ *   합성 신호 검증: 10초마다 박동을 하나씩 지운 신호에서 중앙값 방식은 50~140bpm
+ *   전 구간 통과, 최댓값 방식은 폭주.
+ *
+ * ▸ 상한(PPG_REFRACT_MAX_MS)이 필요한 이유
+ *   부트스트랩 값이자 적응의 천장이다. 600ms = 100bpm. 이보다 길면 안정 심박대의
+ *   진짜 박동을 막기 시작한다. 대신 손가락을 댄 순간의 심박이 100을 넘으면 첫 몇
+ *   박동이 막혀 IBI가 2배로 측정되는데, 중앙값 적응이 곧 불응기를 끌어내려 스스로
+ *   회복한다(합성 검증: 100~180bpm 모두 30초 안에 정확값 수렴, 첫 BPM은 140bpm에서
+ *   1.8초 → 3.1초로 늦어진다 — 이게 부트스트랩의 유일한 대가다).
+ */
+#define PPG_REFRACT_RATIO  0.5f
+#define PPG_REFRACT_MAX_MS 600      // 100 bpm — 부트스트랩 값이자 적응 상한
+/* 중앙값을 낼 IBI 개수. 5 → 9로 늘렸다(2026-09-08).
+ *
+ * 이유는 "기저선 흔들림(baseline wander)"이다. 손가락 압력이 0.5~1.2Hz로 미세하게
+ * 변하면 그 성분이 박동 사이 골을 적응 임계값 **위로** 들어올려 수축기 상승 교차가
+ * 아예 사라지고(prev <= threshold 조건 불성립), 대신 그 박동의 이중맥박파가 교차를
+ * 만든다 → 검출이 심주기의 ~44% 늦게 찍힌다. 실측 IBI에서 정확히 이 서명이 나왔다:
+ *   1160 + 500 = 1660 ≈ 정상 2박(1611). 즉 박동을 놓친 게 아니라 **한 번의 검출이
+ *   밀린 뒤 다음이 그만큼 당겨진** 보상쌍이고, 박동 개수 자체는 맞았다(23박/17.7초).
+ *   판정 근거: RMSSD 202ms > SDNN 125ms. 호흡성 부정맥은 5~6박 주기의 느린 변조라
+ *   SDNN만 키우므로 생리적 HRV는 항상 RMSSD < SDNN이다. 뒤집혔다 = 아티팩트.
+ *
+ * ⚠️ 이건 완치가 아니라 완화다. 흔들림(0.5~1.2Hz)이 심박 기본파(75bpm=1.25Hz)와
+ *    **같은 대역**이라 선형 필터로는 원리적으로 분리할 수 없다. 실제로 후보 5종을
+ *    합성 신호로 전부 검증해 전부 기각했다: 하이패스 코너 0.8Hz 상향 / 2차 하이패스 /
+ *    기울기(미분) 검출 / 포락선 빠른 감쇠 — 흔들림 아래서 개선이 없거나(오차 그대로)
+ *    깨끗한 신호를 망가뜨렸다(기울기 검출은 참값 75를 136으로 읽었다).
+ *    "진행 중앙값 ±30% 밖 기각" 같은 타당성 게이트는 **더 위험하다**: 부트스트랩 값에
+ *    갇혀 140bpm을 69.8로 읽고, 70→130 급상승을 53건 전부 기각해 진짜 스트레스 반응을
+ *    통째로 막았다. 이 프로젝트에서 그건 지터보다 훨씬 나쁜 실패다.
+ *    → **근본 해결은 기계적이다**: 센서를 일정한 압력으로 고정(스트랩/밴드)하는 것.
+ *
+ * 9를 고른 근거(합성 검증, 흔들림 0~1.0×AC × 0.8/1.2Hz 10케이스):
+ *   평균 절대오차 10.7 → 6.2 bpm. 회귀 없음 — 깨끗한 신호(50~180bpm) 결과 동일,
+ *   박동 누락 내성 동일 이상, 70→130 추종 동일(130.4).
+ *   대가는 응답 지연: 중앙값이 움직이려면 과반이 바뀌어야 하므로 75bpm에서 약 1.6초
+ *   늘어난다(2초 전송 주기 기준 한 샘플). 구간 합(평균) 방식도 같이 재봤지만 흔들림
+ *   내성이 중앙값9보다 나빴고(9.3 vs 6.2) 박동 누락에 약해 채택하지 않았다.
+ */
+#define PPG_IBI_SLOTS      9
 #define PPG_STALE_MS       5000     // 이만큼 박동이 없으면 그동안의 IBI를 버린다
 
 // --- PI(관류 지수) 전용 상수 ---
@@ -515,6 +594,40 @@ typedef struct {
 static void ppg_reset(ppg_t *p)
 {
     memset(p, 0, sizeof(*p));
+}
+
+// 최근 IBI들의 중앙값[ms]. 아직 3개가 안 모였으면 0.
+// ppg_bpm과 ppg_refractory_ms가 같이 쓴다 — 둘 다 "현재 심주기"가 필요하고,
+// 둘 다 이상치(박동 누락 → 2배로 튄 IBI)를 무시해야 하기 때문이다.
+static int ppg_median_ibi(const ppg_t *p)
+{
+    if (p->ibi_count < 3) return 0;
+
+    int v[PPG_IBI_SLOTS];
+    memcpy(v, p->ibi, sizeof(int) * (size_t)p->ibi_count);
+    for (int i = 1; i < p->ibi_count; i++) {     // 삽입 정렬 (최대 5개)
+        int key = v[i], j = i - 1;
+        while (j >= 0 && v[j] > key) { v[j + 1] = v[j]; j--; }
+        v[j + 1] = key;
+    }
+    return v[p->ibi_count / 2];
+}
+
+// 지금 적용할 불응기[ms] = 현재 심주기의 절반.
+// 상수 선택 근거(왜 중앙값인지, 왜 부트스트랩이 핵심인지)는 PPG_REFRACT_RATIO 위 주석 참고.
+static int ppg_refractory_ms(const ppg_t *p)
+{
+    int median = ppg_median_ibi(p);
+    if (median <= 0) {
+        // 아직 심박을 모른다 → 가장 보수적인(=가장 긴) 값에서 출발해, 안정 심박의
+        // notch를 **첫 박동부터** 막는다. 쪼개진 상태에 빠지는 것 자체를 예방한다.
+        return PPG_REFRACT_MAX_MS;
+    }
+
+    int refract = (int)(median * PPG_REFRACT_RATIO);
+    if (refract < PPG_IBI_MIN_MS)     refract = PPG_IBI_MIN_MS;
+    if (refract > PPG_REFRACT_MAX_MS) refract = PPG_REFRACT_MAX_MS;
+    return refract;
 }
 
 /* 한 샘플을 파이프라인에 흘려 넣는다. 박동이 검출되면 true.
@@ -660,6 +773,14 @@ static bool ppg_feed(ppg_t *p, uint32_t ir)
     //   PI(⑤)는 유효한 박동 구간이 필요하니 beat를 쓰고,
     //   구간 경계 리셋은 파형 위치가 기준이니 crossing을 쓴다.
     bool beat = false;
+    // 이 교차를 박동 경계로 **채택**했는가. crossing/beat와 또 다른 세 번째 구분이다:
+    //   crossing = 파형이 임계값을 위로 지났다
+    //   accepted = 그 교차를 다음 IBI의 기준점으로 삼는다 (= 진짜 박동의 시작이라고 본다)
+    //   beat     = 거기서 쓸 만한 IBI가 나왔다
+    // notch 교차는 accepted도 beat도 아니다 — 특히 **기준점을 옮기면 안 된다**. 옮기면
+    // 다음 진짜 박동까지의 간격이 notch부터 재어져 IBI가 짧게 나오고, 결국 notch를
+    // 걸러낸 의미가 사라진다.
+    bool accepted = false;
     // 상승 교차 판정 = 직전 샘플은 임계값 아래였는데(prev <= th) 지금은 위다(s > th).
     // 두 샘플을 비교하는 이유: "지금 임계값보다 크다"만 보면 맥파 꼭대기에 머무는
     // 동안 매 샘플이 다 검출되어 한 박동이 수십 번으로 세어진다. 넘어가는 **순간**의
@@ -667,27 +788,35 @@ static bool ppg_feed(ppg_t *p, uint32_t ir)
     // amp 조건은 손가락이 없을 때 잡음이 임계값 근처에서 떠는 걸 막는 게이트다.
     bool crossing = (amp >= PPG_MIN_AMPLITUDE && p->prev <= threshold && s > threshold);
     if (crossing) {
-        if (p->last_beat_idx != 0) {     // 0 = 아직 기준점이 없다(첫 교차) → IBI를 낼 수 없다
+        if (p->last_beat_idx == 0) {     // 0 = 아직 기준점이 없다(첫 교차) → IBI를 낼 수 없다
+            accepted = true;             //     하지만 다음 IBI의 기준점은 된다
+        } else {
             // IBI(Inter-Beat Interval) = 박동 사이 간격.
             // 샘플 인덱스 차 × (1000ms ÷ 50Hz) = 밀리초. 정수 나눗셈이지만 1000을 먼저
             // 곱하므로 정밀도 손실이 없다(20ms 단위로 딱 떨어진다).
             int ibi_ms = (int)((p->idx - p->last_beat_idx) * 1000 / PPG_SAMPLE_RATE);
-            // 생리학적으로 불가능한 간격을 버린다. 이 하한이 곧 **불응기(refractory)** 역할을
-            // 한다 — 심장이 실제로 220bpm보다 빨리 뛸 수 없으므로, 273ms 안에 또 교차가
-            // 잡혔다면 그건 다음 박동이 아니라 같은 맥파의 잡음이나 이중맥박파(dicrotic notch,
-            // 대동맥판이 닫히며 생기는 작은 두 번째 봉우리)다.
-            if (ibi_ms >= PPG_IBI_MIN_MS && ibi_ms <= PPG_IBI_MAX_MS) {
+
+            if (ibi_ms < ppg_refractory_ms(p)) {
+                // 불응기 안 = 같은 맥파의 두 번째 봉우리(dicrotic notch)이거나 잡음.
+                // 버리기만 하고 **기준점은 그대로 둔다** — 위 accepted 주석 참고.
+                // 이게 심박이 2배로 보고되던 원인이었다.
+            } else if (ibi_ms <= PPG_IBI_MAX_MS) {
                 // 최근 5개만 유지하는 링버퍼. ②의 이동평균과 같은 구조인데,
                 // 여기선 합계가 아니라 중앙값을 낼 거라 값 자체를 들고 있는다(ppg_bpm 참고).
                 p->ibi[p->ibi_idx] = ibi_ms;
                 p->ibi_idx = (p->ibi_idx + 1) % PPG_IBI_SLOTS;
                 if (p->ibi_count < PPG_IBI_SLOTS) p->ibi_count++;
                 beat = true;
+                accepted = true;
+            } else {
+                // 너무 긴 간격 = 그 사이 박동을 놓쳤다. IBI로는 못 쓰지만 기준점은 여기서
+                // 다시 잡는다 — 안 그러면 한 번 튄 뒤로 계속 긴 간격만 계산된다.
+                // (짧은 쪽과 달리 여기서는 기준점을 옮기는 게 맞다: 짧은 쪽은 "같은 박동
+                //  안"이라 기준이 유효하지만, 긴 쪽은 기준 자체가 이미 낡았다)
+                accepted = true;
             }
-            // 범위를 벗어난 간격은 버리되 기준점은 갱신한다 —
-            // 안 그러면 한 번 튄 뒤로 계속 긴 간격만 계산된다.
         }
-        p->last_beat_idx = p->idx;
+        if (accepted) p->last_beat_idx = p->idx;
     }
 
     // ⑤ 관류 지수 PI = AC ÷ DC × 100 [%].  방금 끝난 박동 구간 하나를 단위로 계산한다.
@@ -721,7 +850,10 @@ static bool ppg_feed(ppg_t *p, uint32_t ir)
     // ⚠️ 이 블록은 반드시 ⑤ **뒤에** 있어야 한다. 순서를 바꾸면 방금 끝난 구간의
     //    beat_max/min을 PI가 읽기 전에 지워버려 진폭이 항상 0에 가깝게 나온다.
     //    (한 번의 crossing이 "이전 구간의 끝"이자 "다음 구간의 시작"이라 생기는 일이다)
-    if (crossing) {                 // 다음 구간 시작 — 교차점을 경계로 삼는다
+    if (accepted) {                 // 다음 구간 시작 — 채택된 교차점만 경계로 삼는다
+        // crossing이 아니라 accepted를 쓰는 이유: notch 교차에서 구간을 다시 열면 PI의
+        // 분자(peak-to-peak)가 한 박동이 아니라 그 조각에서 측정되어 진폭이 작게 나온다.
+        // 즉 notch는 BPM만이 아니라 PI도 같이 망가뜨리고 있었다.
         p->beat_max = p->beat_min = s;
         p->beat_window = true;
     }
@@ -757,16 +889,7 @@ static bool ppg_feed(ppg_t *p, uint32_t ir)
 // 여기와 호출부(ppg_task) 한 곳에만 존재하고, 그 밖으로는 has_bpm 플래그로만 나간다.
 static int ppg_bpm(const ppg_t *p)
 {
-    if (p->ibi_count < 3) return 0;
-
-    int v[PPG_IBI_SLOTS];
-    memcpy(v, p->ibi, sizeof(int) * (size_t)p->ibi_count);
-    for (int i = 1; i < p->ibi_count; i++) {     // 삽입 정렬 (최대 5개)
-        int key = v[i], j = i - 1;
-        while (j >= 0 && v[j] > key) { v[j + 1] = v[j]; j--; }
-        v[j + 1] = key;
-    }
-    int median = v[p->ibi_count / 2];
+    int median = ppg_median_ibi(p);   // 3개 미만이면 0 → 아래에서 그대로 0이 나간다
     return median > 0 ? 60000 / median : 0;
 }
 
@@ -790,11 +913,18 @@ static bool     s_ppg_has_pi;
 static float    s_ppg_pi;       // has_pi가 false면 의미 없음
 static bool     s_ppg_finger;
 static uint32_t s_ppg_ir;       // 원시 IR DC 수준 (PPG_FINGER_IR_ON/OFF 보정용으로 노출)
+// 진단용: 중앙값을 내기 **전**의 원시 IBI들. BPM만 보면 "심박이 튄다"까지밖에 알 수 없는데,
+// 원인이 셋(진짜 HRV / 박동 누락 / 검출 지터)이고 대처가 전부 다르다. 원시 IBI를 보면
+// 바로 갈린다: 매끄럽게 변하면 HRV, 정확히 2배가 섞이면 누락, 들쭉날쭉하면 지터.
+// (CLAUDE.md의 다음 단계 "IBI를 서버로 올려 RMSSD/SDNN 실측"의 준비이기도 하다)
+static int      s_ppg_ibi[PPG_IBI_SLOTS];
+static int      s_ppg_ibi_count;
 
 // 측정 태스크(core 1)와 전송 루프(core 0)가 공유하는 값이라 스핀락으로 감싼다.
 // 복사만 하는 아주 짧은 구간이라 임계영역 길이는 문제되지 않는다.
 static void ppg_snapshot(bool *has_bpm, int *bpm, bool *has_pi, float *pi,
-                         bool *finger, uint32_t *ir)
+                         bool *finger, uint32_t *ir,
+                         int *ibi_out, int *ibi_count)
 {
     taskENTER_CRITICAL(&s_ppg_mux);
     *has_bpm = s_ppg_has_bpm;
@@ -803,6 +933,8 @@ static void ppg_snapshot(bool *has_bpm, int *bpm, bool *has_pi, float *pi,
     *pi      = s_ppg_pi;
     *finger  = s_ppg_finger;
     *ir      = s_ppg_ir;
+    *ibi_count = s_ppg_ibi_count;
+    memcpy(ibi_out, s_ppg_ibi, sizeof(s_ppg_ibi));
     taskEXIT_CRITICAL(&s_ppg_mux);
 }
 
@@ -861,6 +993,16 @@ static void ppg_task(void *arg)
         s_ppg_pi      = pi;
         s_ppg_finger  = finger;
         s_ppg_ir      = ir_dc;
+        // 링버퍼를 **시간 순서대로** 펴서 복사한다. ibi_idx가 다음에 덮어쓸 자리이므로
+        // 버퍼가 찼을 땐 거기가 가장 오래된 값이다. 순서가 뒤섞이면 "2배가 섞였는지"를
+        // 눈으로 판별할 수 없어 진단 목적 자체가 사라진다.
+        s_ppg_ibi_count = ppg.ibi_count;
+        for (int i = 0; i < ppg.ibi_count; i++) {
+            int src = (ppg.ibi_count < PPG_IBI_SLOTS)
+                        ? i                                              // 아직 안 찼으면 0..n-1이 순서
+                        : (ppg.ibi_idx + i) % PPG_IBI_SLOTS;             // 찼으면 ibi_idx가 가장 오래된 값
+            s_ppg_ibi[i] = ppg.ibi[src];
+        }
         taskEXIT_CRITICAL(&s_ppg_mux);
 
         vTaskDelay(pdMS_TO_TICKS(PPG_POLL_MS));
@@ -871,64 +1013,146 @@ static void ppg_task(void *arg)
 // 비트 폭이 26us(0) vs 70us(1)라 인터럽트가 끼면 값이 깨진다 → 수신 구간만 임계영역으로 감싼다.
 static portMUX_TYPE s_dht_mux = portMUX_INITIALIZER_UNLOCKED;
 
+// 호스트 시작 신호의 LOW 유지 시간. DHT22/AM2302 규격은 0.8~20ms이고 권장은 1ms 안팎이다.
+// (DHT11은 최소 18ms라 값이 다르다 — 여기 20ms가 박혀 있던 게 실패 원인 중 하나였다)
+#define DHT_START_LOW_US   1200
+// 재시도 간격. DHT22 데이터시트의 **최소 샘플링 주기가 2초**라 그보다 빨리 다시 물으면
+// 센서가 아예 응답하지 않는다. 종전 50ms는 이 규격을 어겨서 2·3번째 재시도가 실패할 수밖에
+// 없었다 — 즉 "3회 재시도"가 실질적으로 1회였다.
+#define DHT_RETRY_DELAY_MS 2000
+
+/* ⚠️ 아래 세 함수는 전부 IRAM_ATTR이고 GPIO 레지스터를 직접 읽고 쓴다. 편의 API를
+ * 쓰지 않는 이유가 이 드라이버가 실패하던 진짜 원인이었다:
+ *
+ *   ESP-IDF의 gpio_get_level()은 IRAM이 아니다 (esp_driver_gpio/src/gpio.c:255, 속성 없음).
+ *   즉 **플래시에 있는 함수**다. 40비트를 받는 동안 dht_wait가 80번 불리고 그 안에서
+ *   매번 이 함수를 호출하는데, 임계영역(약 5ms) 도중 명령어 캐시 미스가 나면 CPU가
+ *   SPI 플래시에서 코드를 읽어오느라 수십 µs 멈춘다. 더 나쁜 경우 core 0(WiFi)이
+ *   플래시에 쓰기를 하면 캐시가 통째로 꺼져 core 1이 수 ms 멈춘다.
+ *   비트 하나의 여유가 100µs뿐이라 그 순간 타임아웃 → "비트 수신 중단"으로 나온다.
+ *   (실측 증상이 정확히 이것이었다: 응답 핸드셰이크는 통과하는데 40비트 중간에 끊김)
+ *
+ * 그래서 타이밍 구간 전체를 플래시에서 떼어낸다. esp_timer_get_time()은 IDF에서
+ * ESP_TIMER_IRAM_ATTR이 붙어 있어 그대로 써도 안전하고, esp_rom_delay_us()는 ROM 함수다.
+ */
+
+// GPIO 입력 레벨을 레지스터에서 직접 읽는다. GPIO.in은 0~31번 핀용 비트맵이다
+// (32번 이상은 GPIO.in1.data). DHT_GPIO=5라 여기 해당한다.
+static inline IRAM_ATTR int dht_level(int pin)
+{
+    return (int)((GPIO.in >> pin) & 0x1);
+}
+
 // 핀이 지정 레벨이 될 때까지 대기. 타임아웃이면 false.
-static bool dht_wait(int pin, int level, int timeout_us)
+static IRAM_ATTR bool dht_wait(int pin, int level, int timeout_us)
 {
     int64_t start = esp_timer_get_time();
-    while (gpio_get_level(pin) != level) {
+    while (dht_level(pin) != level) {
         if (esp_timer_get_time() - start > timeout_us) return false;
     }
     return true;
 }
 
-static bool dht_read_once(int pin, float *temp_c, float *humidity)
+/* 실패 원인 구분. "읽기 실패"만 찍으면 배선/풀업 문제인지 타이밍 문제인지 알 수 없어
+ * 대처가 갈린다:
+ *   NO_RESPONSE  — 센서가 시작 신호에 응답조차 안 했다 → 배선·전원·**풀업 저항**을 의심.
+ *                  ESP32 내부 풀업은 약 45kΩ이라 1-Wire에는 약하다. 4.7k~10k 외부 풀업 권장.
+ *   BIT_TIMEOUT  — 응답은 왔는데 40비트를 받다 끊겼다 → 타이밍(인터럽트 방해)이나 접촉 불량.
+ *   CHECKSUM     — 다 받았는데 체크섬 불일치 → 비트 샘플링 타이밍이 경계에 걸려 있다.
+ * 이 구분이 있어야 "계속 실패"를 눈으로 보고 어디를 손볼지 정할 수 있다. */
+typedef enum {
+    DHT_OK = 0,
+    DHT_ERR_NO_RESPONSE,
+    DHT_ERR_BIT_TIMEOUT,
+    DHT_ERR_CHECKSUM,
+} dht_err_t;
+
+static const char *dht_err_str(dht_err_t e)
+{
+    switch (e) {
+    case DHT_OK:                 return "성공";
+    case DHT_ERR_NO_RESPONSE:    return "무응답 (배선/전원/풀업 확인 — 내부 45k는 약함, 4.7k 권장)";
+    case DHT_ERR_BIT_TIMEOUT:    return "비트 수신 중단 (타이밍/접촉)";
+    case DHT_ERR_CHECKSUM:       return "체크섬 불일치 (샘플링 타이밍)";
+    default:                     return "알 수 없음";
+    }
+}
+
+static IRAM_ATTR dht_err_t dht_read_once(int pin, float *temp_c, float *humidity)
 {
     uint8_t data[5] = { 0 };
-    bool ok = true;
+    dht_err_t err = DHT_OK;
 
-    // 시작 신호: 20ms LOW로 당겼다가 놓고 입력으로 전환
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    // 시작 신호: LOW로 당겼다가 놓고 입력으로 전환.
+    //
+    // ⚠️ 이 시간은 DHT11과 DHT22가 다르다. **20ms는 DHT11 값**이다(DHT11은 최소 18ms를
+    //    요구한다). DHT22/AM2302는 "최소 800us, 최대 20ms"라서 20ms는 규격의 정확히
+    //    상한 끝에 걸쳐 있다. 게다가 이 구간은 임계영역 밖의 **바쁜 대기**라 우선순위가
+    //    더 높은 ppg_task(5 > dht_task 4, 같은 core 1)에 선점당할 수 있는데, 20ms에서
+    //    선점당하면 곧바로 규격을 넘겨 센서가 시작 신호를 무시한다.
+    //    1.2ms로 내리면 선점으로 몇 ms 늘어나도 여전히 0.8~20ms 안에 있다.
+    // ⚠️ OUTPUT이 아니라 **INPUT_OUTPUT**이어야 한다. GPIO_MODE_OUTPUT은 입력 경로(IE)를
+    //    꺼버리는데, 아래에서 우리는 출력 인에이블 비트만 레지스터로 지워 입력으로 되돌린다
+    //    — IE가 꺼져 있으면 GPIO.in이 핀 상태를 반영하지 않아 응답을 영영 못 본다.
+    //    INPUT_OUTPUT으로 두면 입력 경로가 계속 살아 있어 그 전환이 한 비트로 끝난다.
+    //    (푸시풀 출력이 풀업을 이기므로 LOW로 당기는 데는 지장이 없다)
+    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT);
     gpio_set_level(pin, 0);
-    esp_rom_delay_us(20000);
-    gpio_set_level(pin, 1);
-    esp_rom_delay_us(30);
-    gpio_set_direction(pin, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    esp_rom_delay_us(DHT_START_LOW_US);
 
+    // ⚠️ 임계영역은 **라인을 놓기 전에** 시작해야 한다.
+    //    센서는 호스트가 라인을 놓은 뒤 20~40us 만에 80us짜리 응답 펄스를 보낸다.
+    //    종전 코드는 놓는 시점부터 taskENTER_CRITICAL까지가 임계영역 **밖**이었다.
+    //    그 사이(레지스터 쓰기 몇 개)에 ppg_task가 선점하면 — ppg_task는 100ms마다
+    //    깨어나 I2C 버스트를 돌리므로 수 ms를 잡아먹는다 — 80us 응답 펄스가 통째로
+    //    지나가 버려 무응답으로 읽힌다. 놓는 순간부터 수신 끝까지를 원자적으로 만든다.
     taskENTER_CRITICAL(&s_dht_mux);
+    // 여기도 gpio_set_level/gpio_set_direction 대신 레지스터를 직접 친다 — 위 dht_level의
+    // 주석과 같은 이유다. 라인을 놓은 뒤 20~40us 안에 센서 응답이 시작되므로, 이 두 줄에서
+    // 플래시 캐시 미스가 나면 응답 펄스를 통째로 놓친다.
+    //   out_w1ts / enable_w1tc = 쓴 비트만 set/clear 하는 레지스터(read-modify-write 불필요)
+    GPIO.out_w1ts = (1U << pin);       // 라인 해제 (HIGH)
+    esp_rom_delay_us(30);
+    GPIO.enable_w1tc = (1U << pin);    // 출력 드라이버 끄기 = 입력으로 전환
+                                       // (풀업은 app_main에서 한 번만 걸어둔다)
     do {
         // 응답 신호: LOW 80us → HIGH 80us
         if (!dht_wait(pin, 0, 200) || !dht_wait(pin, 1, 150) || !dht_wait(pin, 0, 150)) {
-            ok = false;
+            err = DHT_ERR_NO_RESPONSE;
             break;
         }
         // 40비트: 각 비트 = LOW 50us + HIGH(26us=0 / 70us=1)
         // 펄스 폭을 재지 않고 HIGH 시작 40us 뒤에 한 번만 샘플한다 (0이면 이미 LOW, 1이면 아직 HIGH).
         for (int i = 0; i < 40; i++) {
-            if (!dht_wait(pin, 1, 100)) { ok = false; break; }
+            if (!dht_wait(pin, 1, 100)) { err = DHT_ERR_BIT_TIMEOUT; break; }
             esp_rom_delay_us(40);
             data[i / 8] <<= 1;
             if (gpio_get_level(pin)) data[i / 8] |= 1;
-            if (!dht_wait(pin, 0, 100)) { ok = false; break; }   // 다음 비트 전에 재동기화
+            if (!dht_wait(pin, 0, 100)) { err = DHT_ERR_BIT_TIMEOUT; break; }   // 다음 비트 전에 재동기화
         }
     } while (0);
     taskEXIT_CRITICAL(&s_dht_mux);
 
-    if (!ok) return false;
-    if ((uint8_t)(data[0] + data[1] + data[2] + data[3]) != data[4]) return false;  // 체크섬
+    if (err != DHT_OK) return err;
+    if ((uint8_t)(data[0] + data[1] + data[2] + data[3]) != data[4]) return DHT_ERR_CHECKSUM;
 
     // DHT22(AM2302): 16비트 big-endian, 0.1 단위. 온도 최상위 비트 = 부호.
     *humidity = (((uint16_t)data[0] << 8) | data[1]) * 0.1f;
     *temp_c   = ((((uint16_t)(data[2] & 0x7F)) << 8) | data[3]) * 0.1f;
     if (data[2] & 0x80) *temp_c = -*temp_c;
-    return true;
+    return DHT_OK;
 }
+
+// 마지막 시도의 실패 원인. 시리얼에 찍어 어디를 손볼지 판단하는 용도다.
+static dht_err_t s_dht_last_err = DHT_OK;
 
 static bool dht_read(int pin, float *temp_c, float *humidity)
 {
     for (int i = 0; i < 3; i++) {                 // 타이밍 센서라 간헐 실패가 정상 → 3회 재시도
-        if (dht_read_once(pin, temp_c, humidity)) return true;
-        vTaskDelay(pdMS_TO_TICKS(50));
+        dht_err_t e = dht_read_once(pin, temp_c, humidity);
+        s_dht_last_err = e;
+        if (e == DHT_OK) return true;
+        vTaskDelay(pdMS_TO_TICKS(DHT_RETRY_DELAY_MS));
     }
     return false;
 }
@@ -1390,6 +1614,11 @@ void app_main(void)
     gsr_init();
     max30102_init();
     gpio_reset_pin(DHT_GPIO);
+    // 풀업을 여기서 한 번만 건다. 읽기마다 걸면 라인을 놓은 직후(= 응답을 놓치면 안 되는
+    // 구간)에 레지스터 쓰기가 하나 더 끼어든다.
+    // ⚠️ 내부 풀업은 약 45kΩ이라 1-Wire에는 약하다. 배선이 길거나 무응답이 계속되면
+    //    DATA-3.3V 사이에 4.7k~10k 외부 풀업을 다는 것이 정석이다.
+    gpio_set_pull_mode(DHT_GPIO, GPIO_PULLUP_ONLY);
 
     // 타이밍이 걸린 센서 작업은 전부 core 1로 보낸다. core 0은 app_main(HTTP에서 수 초씩
     // 블로킹)과 WiFi가 쓰기 때문에, 여기 두면 PPG 폴링이 밀려 FIFO가 넘치고
@@ -1435,12 +1664,14 @@ void app_main(void)
         float pi = 0;
         bool finger = false;
         uint32_t ir_dc = 0;
-        ppg_snapshot(&has_bpm, &bpm, &has_pi, &pi, &finger, &ir_dc);
+        int ibi[PPG_IBI_SLOTS] = { 0 };
+        int ibi_count = 0;
+        ppg_snapshot(&has_bpm, &bpm, &has_pi, &pi, &finger, &ir_dc, ibi, &ibi_count);
 
         printf("\n===== 센서 =====\n");
         printf("GSR      : %d\n", gsr);
         if (dht_ok) printf("DHT22    : %.1f C / %.1f %%RH\n", temp_c, humidity);
-        else        printf("DHT22    : 읽기 실패\n");
+        else        printf("DHT22    : 읽기 실패 — %s\n", dht_err_str(s_dht_last_err));
         // IR 값을 항상 같이 찍는다 — PPG_FINGER_IR_ON/OFF를 실제 센서/LED 전류에 맞춰
         // 보정하려면 손가락을 댔을 때와 뗐을 때의 IR을 눈으로 비교해야 한다.
         if (!s_max_ok)   printf("MAX30102 : 미연결\n");
@@ -1453,6 +1684,15 @@ void app_main(void)
         if (s_max_ok) {
             if (has_pi) printf("           PI %.2f %%\n", pi);
             else if (finger) printf("           PI 수렴 중...\n");
+            // 중앙값 이전의 원시 IBI. BPM이 튈 때 원인을 가르는 유일한 근거다:
+            //   매끄럽게 변함        → 진짜 HRV (호흡성 부정맥). 정상.
+            //   정확히 2배가 섞임    → 박동 누락 (예: 800 800 1600 800)
+            //   무질서하게 들쭉날쭉  → 검출 지터 (임계값/노이즈)
+            if (ibi_count > 0) {
+                printf("           IBI");
+                for (int i = 0; i < ibi_count; i++) printf(" %d", ibi[i]);
+                printf(" ms\n");
+            }
         }
 
         // 링크가 한 번이라도 끊겼으면 붙잡고 있던 TLS 소켓은 이미 죽은 것이다.
